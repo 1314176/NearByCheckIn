@@ -1,45 +1,74 @@
-*.iml
-.gradle
+#######################################
+# Android Studio
+#######################################
+
 .idea/
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-app/build/
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+*.iml
 
+# Android Studio generated files
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
 
-# Kotlin generated files
-.kotlin/
+#######################################
+# Gradle
+#######################################
 
-# Debug and log files
-Debug.txt
-*.log
-
-# Local configuration
-local.properties
-
-# Gradle generated files
 .gradle/
+build/
 **/build/
 
-# Android Studio
-.idea/
-*.iml
+#######################################
+# Local configuration & secrets
+#######################################
 
+local.properties
+secrets.properties
+
+.env
+.env.*
+
+#######################################
+# Kotlin
+#######################################
+
+.kotlin/
+
+#######################################
+# Android generated files
+#######################################
+
+captures/
+.externalNativeBuild/
+.cxx/
+
+#######################################
+# Logs & Debug
+#######################################
+
+*.log
+Debug.txt
+
+#######################################
 # Signing files
+#######################################
+
 *.jks
 *.keystore
 
-# Environment and secrets
-.env
-.env.*
-secrets.properties
+#######################################
+# OS files
+#######################################
+
+.DS_Store
+Thumbs.db
+
+#######################################
+# Temporary files
+#######################################
+
+*.tmp
+*.temp
