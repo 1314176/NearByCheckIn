@@ -1,0 +1,53 @@
+# NearbyCheckIn 项目环境与依赖清单
+
+# 说明
+# 当前项目是 Android/Kotlin 应用，不是 Python 项目。
+# 本文件用于记录构建环境、Gradle 插件和主要依赖版本；无需执行 pip install -r requirements.txt。
+
+# 运行与构建环境
+JDK >= 11
+Android Studio >= 2026.1.1
+Android SDK compileSdk = 37
+Android SDK minSdk = 26
+Android SDK targetSdk = 37
+Gradle Wrapper = 9.4.1
+
+# Gradle 插件
+com.android.application = 9.2.1
+org.jetbrains.kotlin.plugin.compose = 2.4.0
+org.gradle.toolchains.foojay-resolver-convention = 1.0.0
+
+# AndroidX 与 Compose 依赖
+androidx.core:core-ktx = 1.16.0
+androidx.lifecycle:lifecycle-runtime-ktx = 2.9.4
+androidx.activity:activity-compose = 1.8.2
+androidx.compose:compose-bom = 2026.02.01
+androidx.compose.ui:ui = 由 compose-bom 管理
+androidx.compose.ui:ui-graphics = 由 compose-bom 管理
+androidx.compose.ui:ui-tooling-preview = 由 compose-bom 管理
+androidx.compose.ui:ui-tooling = 由 compose-bom 管理，仅 debug 使用
+androidx.compose.ui:ui-test-manifest = 由 compose-bom 管理，仅 debug 使用
+androidx.compose.ui:ui-test-junit4 = 由 compose-bom 管理，仅 androidTest 使用
+androidx.compose.material3:material3 = 由 compose-bom 管理
+
+# 百度地图 SDK 依赖
+com.baidu.lbsyun:BaiduMapSDK_Map = 8.1.0
+com.baidu.lbsyun:BaiduMapSDK_Search = 8.1.0
+com.baidu.lbsyun:BaiduMapSDK_Util = 8.1.0
+
+# 测试依赖
+junit:junit = 4.13.2
+androidx.test.ext:junit = 1.1.5
+androidx.test.espresso:espresso-core = 3.5.1
+
+# 依赖仓库
+google()
+mavenCentral()
+gradlePluginPortal()
+
+# 本地配置
+local.properties 需要提供 BAIDU_MAP_AK
+local.properties 可由 Android Studio 自动写入 sdk.dir
+
+# Python 依赖
+无

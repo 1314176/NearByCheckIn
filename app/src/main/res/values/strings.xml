@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">NearbyCheckIn</string>
+    <string name="dual_map_accessibility_service_label">NearbyCheckIn 双地图诊断</string>
+    <string name="dual_map_accessibility_service_description">识别百度地图和高德地图分屏窗口，按用户启动请求尝试打开双地图分屏，并按已验证节点执行地图打卡操作。</string>
+</resources>
