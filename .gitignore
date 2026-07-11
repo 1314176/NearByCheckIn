@@ -15,3 +15,31 @@ app/build/
 .externalNativeBuild
 .cxx
 local.properties
+
+
+# Kotlin generated files
+.kotlin/
+
+# Debug and log files
+Debug.txt
+*.log
+
+# Local configuration
+local.properties
+
+# Gradle generated files
+.gradle/
+**/build/
+
+# Android Studio
+.idea/
+*.iml
+
+# Signing files
+*.jks
+*.keystore
+
+# Environment and secrets
+.env
+.env.*
+secrets.properties
