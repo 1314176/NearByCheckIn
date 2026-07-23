@@ -7,13 +7,15 @@
 @file:Suppress("SpellCheckingInspection")
 
 
-package com.wu.nearbycheckin
+package com.wu.nearbycheckin.platform.maps
 
 
 import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+
+import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
 
 /**
  * 只读检查无障碍窗口和节点，用于采集百度地图与高德地图分屏诊断信息。
@@ -30,7 +32,7 @@ object AccessibilityWindowInspector {
     fun inspectWindows(
         windows: List<AccessibilityWindowInfo>,
         reason: String
-    ): AccessibilityDiagnosticsSnapshot {
+    ): AccessibilityDiagnostics {
         var baiduReady = false
         var amapReady = false
         var targetWindowCount = 0
@@ -81,7 +83,7 @@ object AccessibilityWindowInspector {
             }
         }
 
-        return AccessibilityDiagnosticsSnapshot(
+        return AccessibilityDiagnostics(
             baiduReady = baiduReady,
             amapReady = amapReady,
             totalWindowCount = windows.size,
@@ -162,7 +164,7 @@ object AccessibilityWindowInspector {
      *
      * @param snapshot 本次诊断摘要。
      */
-    fun logSnapshot(snapshot: AccessibilityDiagnosticsSnapshot) {
+    fun logSnapshot(snapshot: AccessibilityDiagnostics) {
         Log.i(
             TAG,
             "分屏窗口状态：百度=${if (snapshot.baiduReady) "已就绪" else "未就绪"}，" +

@@ -7,7 +7,7 @@
 @file:Suppress("SpellCheckingInspection")
 
 
-package com.wu.nearbycheckin
+package com.wu.nearbycheckin.data.legacy
 
 
 import android.content.Context
@@ -208,6 +208,17 @@ class AccessibilityDiagnosticsRepository(
         }
 
         return requestTimeMillis
+    }
+
+    /**
+     * 清理尚未被无障碍服务消费的自动分屏请求，避免历史请求在下次打开软件时继续执行。
+     */
+    fun clearPendingAutoSplitLaunchRequest() {
+        preferences.edit {
+            remove(
+                AUTO_SPLIT_REQUEST_TIME_MILLIS_KEY
+            )
+        }
     }
 
     /**

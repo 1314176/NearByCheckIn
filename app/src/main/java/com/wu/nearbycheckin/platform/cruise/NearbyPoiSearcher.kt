@@ -6,7 +6,7 @@
 
 @file:Suppress("SpellCheckingInspection")
 
-package com.wu.nearbycheckin
+package com.wu.nearbycheckin.platform.cruise
 
 
 import kotlin.math.roundToInt

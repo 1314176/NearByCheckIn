@@ -57,6 +57,7 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
@@ -71,11 +72,11 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     // 百度地图基础组件
-        implementation(libs.baidumap)
+    implementation(libs.baidumap)
 
     // 百度地图地点检索组件
-        implementation(libs.baidusearch)
+    implementation(libs.baidusearch)
 
     // 百度地图坐标转换和距离计算组件
-        implementation(libs.baiduutil)
+    implementation(libs.baiduutil)
 }

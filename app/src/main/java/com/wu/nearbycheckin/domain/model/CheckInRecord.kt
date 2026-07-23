@@ -7,7 +7,7 @@
 @file:Suppress("SpellCheckingInspection")
 
 
-package com.wu.nearbycheckin
+package com.wu.nearbycheckin.domain.model
 
 /**
  * 表示一次已经确认完成的周边地点自动打卡记录。

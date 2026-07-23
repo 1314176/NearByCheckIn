@@ -4,7 +4,7 @@
 // @Software: Android Studio
 
 
-package com.wu.nearbycheckin
+package com.wu.nearbycheckin.presentation.components
 
 
 import kotlin.math.cos

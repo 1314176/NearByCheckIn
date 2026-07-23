@@ -5,7 +5,7 @@
 
 @file:Suppress("SpellCheckingInspection")
 
-package com.wu.nearbycheckin
+package com.wu.nearbycheckin.platform.maps
 
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -43,18 +43,23 @@ object AccessibilityNodeActions {
             )
         }
 
-        val targetNode = findFirstMatchingNode(
+        val matchingNodes = mutableListOf<AccessibilityNodeInfo>()
+        collectMatchingNodes(
             node = rootNode,
             labels = labels,
-            depth = 0
-        ) ?: return AccessibilityClickResult(
-            success = false,
-            message = "未找到节点：${labels.joinToString(separator = "/")}"
+            depth = 0,
+            result = matchingNodes
         )
+        if (matchingNodes.isEmpty()) {
+            return AccessibilityClickResult(
+                success = false,
+                message = "未找到节点：${labels.joinToString(separator = "/")}"
+            )
+        }
 
-        val clickableNode = findClickableNode(
-            targetNode
-        ) ?: return AccessibilityClickResult(
+        val clickableNode = matchingNodes.firstNotNullOfOrNull { node ->
+            findClickableNode(node)
+        } ?: return AccessibilityClickResult(
             success = false,
             message = "节点不可点击：${labels.joinToString(separator = "/")}"
         )
@@ -81,16 +86,18 @@ object AccessibilityNodeActions {
      * @param depth 当前递归深度。
      * @return 找到的节点，找不到时返回null。
      */
-    private fun findFirstMatchingNode(
+    private fun collectMatchingNodes(
         node: AccessibilityNodeInfo?,
         labels: List<String>,
-        depth: Int
-    ): AccessibilityNodeInfo? {
+        depth: Int,
+        result: MutableList<AccessibilityNodeInfo>
+    ) {
         if (
             node == null ||
-            depth > MAX_SEARCH_DEPTH
+            depth > MAX_SEARCH_DEPTH ||
+            result.size >= MAX_MATCHING_NODE_COUNT
         ) {
-            return null
+            return
         }
 
         val text = node.text?.toString().orEmpty().trim()
@@ -98,25 +105,28 @@ object AccessibilityNodeActions {
 
         if (
             labels.any { label ->
-                text == label || description == label
+                text.matchesLabel(label) ||
+                        description.matchesLabel(label)
             }
         ) {
-            return node
+            result += node
         }
 
         for (childIndex in 0 until node.childCount) {
-            val childNode = findFirstMatchingNode(
+            collectMatchingNodes(
                 node = node.getChild(childIndex),
                 labels = labels,
-                depth = depth + 1
+                depth = depth + 1,
+                result = result
             )
-
-            if (childNode != null) {
-                return childNode
-            }
         }
+    }
 
-        return null
+    // 匹配精确文本或无障碍描述中常见的按钮后缀。
+    private fun String.matchesLabel(label: String): Boolean {
+        return this == label ||
+                startsWith("$label,") ||
+                startsWith("$label，")
     }
 
     /**
@@ -132,8 +142,13 @@ object AccessibilityNodeActions {
 
         while (currentNode != null) {
             if (
-                currentNode.isClickable &&
-                currentNode.isEnabled
+                currentNode.isEnabled &&
+                (
+                        currentNode.isClickable ||
+                                currentNode.actionList.any { action ->
+                                    action.id == AccessibilityNodeInfo.ACTION_CLICK
+                                }
+                        )
             ) {
                 return currentNode
             }
@@ -145,4 +160,5 @@ object AccessibilityNodeActions {
     }
 
     private const val MAX_SEARCH_DEPTH = 12
+    private const val MAX_MATCHING_NODE_COUNT = 20
 }
