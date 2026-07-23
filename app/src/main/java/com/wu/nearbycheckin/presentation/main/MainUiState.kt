@@ -34,8 +34,7 @@ data class MainUiState(
     val showPrivacyDialog: Boolean = false,
     val mapChainStartupStatus: String = "",
     val isBaiduPaneReplacementPending: Boolean = false,
-    val isLoading: Boolean = false,
-    val errorMessage: String = ""
+    val errorMessage: String = "",
 ) {
 
     val allMapsInstalled: Boolean
