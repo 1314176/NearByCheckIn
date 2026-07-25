@@ -6,12 +6,14 @@
 package com.wu.nearbycheckin.platform.cruise
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
@@ -127,19 +129,36 @@ class AndroidCruisePlatformGateway(
 
     // 判断项目无障碍平台适配器是否已由用户启用。
     private fun isAccessibilityServiceEnabled(): Boolean {
-        val componentName = ComponentName(
+        val targetComponent = ComponentName(
             applicationContext,
             DualMapAccessibilityService::class.java
-        ).flattenToString()
+        )
+        val accessibilityManager =
+            applicationContext.getSystemService(
+                Context.ACCESSIBILITY_SERVICE
+            ) as AccessibilityManager
+        val enabledByManager = accessibilityManager
+            .getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+            )
+            .any { serviceInfo ->
+                val resolvedService = serviceInfo.resolveInfo.serviceInfo
+                ComponentName(
+                    resolvedService.packageName,
+                    resolvedService.name
+                ) == targetComponent
+            }
+        if (enabledByManager) {
+            return true
+        }
+
         val enabledServices = Settings.Secure.getString(
             applicationContext.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
-        return enabledServices.split(':').any { enabledService ->
-            enabledService.equals(
-                componentName,
-                ignoreCase = true
-            )
+        return enabledServices.split(':').any { flattenedComponent ->
+            ComponentName.unflattenFromString(flattenedComponent) ==
+                    targetComponent
         }
     }
 

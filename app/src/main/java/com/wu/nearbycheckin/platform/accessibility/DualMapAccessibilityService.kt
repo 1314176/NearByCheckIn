@@ -66,7 +66,6 @@ class DualMapAccessibilityService : AccessibilityService() {
         commandWorker = DualMapCommandWorker(
             service = this,
             coordinator = appContainer.checkInCoordinator,
-            repository = appContainer.transactionRepository,
             onStatusChanged = ::saveAutomationStatus
         )
 

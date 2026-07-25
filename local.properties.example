@@ -1,2 +1,5 @@
 # 百度地图开放平台 Android 应用访问密钥，构建时会写入 AndroidManifest.xml 的占位符。
 BAIDU_MAP_AK=
+
+# 高德地图开放平台 Android 应用访问密钥，构建时会写入 AndroidManifest.xml 的占位符。
+AMAP_MAP_AK=

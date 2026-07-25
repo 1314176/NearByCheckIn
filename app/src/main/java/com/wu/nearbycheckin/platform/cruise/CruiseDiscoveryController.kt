@@ -42,6 +42,7 @@ class CruiseDiscoveryController(
     private var lastPoiSearchTimeMillis = 0L
     private var lastPoiSearchLocation: Location? = null
     private var continuousScanScheduled = false
+    private val continuousScanPolicy = ContinuousScanPolicy()
 
     private val baiduAuthStateListener:
             (Boolean, String) -> Unit = { passed, description ->
@@ -170,16 +171,20 @@ class CruiseDiscoveryController(
                 if (nearbyPoiList.isEmpty()) {
                     Log.d(TAG, "当前位置附近没有可提交的地点")
                     onStatusChanged("附近暂未发现地点")
+                    continuousScanPolicy.recordCandidateOutcome(
+                        acceptedCount = 0,
+                        deferredCount = 0
+                    )
                 } else {
                     submitNearbyCandidates(nearbyPoiList)
                 }
-                scheduleContinuousScan()
+                rescheduleContinuousScan()
             },
             onSearchFailure = { errorMessage ->
                 isPoiSearchRunning = false
                 Log.e(TAG, errorMessage)
                 onStatusChanged("地点检索失败，请稍后重试")
-                scheduleContinuousScan()
+                rescheduleContinuousScan()
             }
         )
     }
@@ -250,6 +255,10 @@ class CruiseDiscoveryController(
             "候选提交：总数=${nearbyPoiList.size}，" +
                     "入队=$acceptedCount，暂缓=$deferredCount"
         )
+        continuousScanPolicy.recordCandidateOutcome(
+            acceptedCount = acceptedCount,
+            deferredCount = deferredCount
+        )
         onStatusChanged(statusText)
     }
 
@@ -270,24 +279,26 @@ class CruiseDiscoveryController(
         )
     }
 
-    // 根据当前速度返回静止心跳间隔。
-    private fun continuousScanIntervalMillis(): Long {
-        return if (isFastScanMode()) {
-            FAST_SCAN_INTERVAL_MILLIS
-        } else {
-            CONTINUOUS_SCAN_HEARTBEAT_INTERVAL_MILLIS
-        }
+    // 以最新候选结果重新计算并覆盖下一次扫描任务。
+    private fun rescheduleContinuousScan() {
+        mainHandler.removeCallbacks(continuousScanRunnable)
+        continuousScanScheduled = false
+        scheduleContinuousScan()
     }
 
-    // 判断当前定位是否进入快速移动扫描模式。
-    private fun isFastScanMode(): Boolean {
+    // 根据当前速度返回静止心跳间隔。
+    private fun continuousScanIntervalMillis(): Long {
         val location = latestLocation
-        if (location == null || !location.hasSpeed()) {
-            return false
+        val speedKmh = if (
+            location != null &&
+            location.hasSpeed()
+        ) {
+            location.speed *
+                    METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR
+        } else {
+            0F
         }
-        return location.speed *
-                METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR >
-                FAST_SCAN_SPEED_THRESHOLD_KMH
+        return continuousScanPolicy.nextIntervalMillis(speedKmh)
     }
 
     // 优先使用百度 UID，缺失时生成名称坐标组合键。
@@ -369,6 +380,16 @@ class CruiseDiscoveryController(
 
     // 更新最近位置、通知文本并按节流规则请求 POI。
     private fun updateLocation(location: Location) {
+        val previousLocation = latestLocation
+        if (
+            previousLocation == null ||
+            location.distanceTo(previousLocation) >=
+            POI_SEARCH_DISTANCE_METERS
+        ) {
+            continuousScanPolicy.resetForLocationChange()
+            mainHandler.removeCallbacks(continuousScanRunnable)
+            continuousScanScheduled = false
+        }
         latestLocation = Location(location)
         val locationText = String.format(
             Locale.US,
@@ -454,10 +475,7 @@ class CruiseDiscoveryController(
         const val POI_SEARCH_INTERVAL_MILLIS = 30_000L
         const val POI_SEARCH_DISTANCE_METERS = 50F
         const val MAX_ACCEPTABLE_ACCURACY_METERS = 100F
-        const val FAST_SCAN_SPEED_THRESHOLD_KMH = 60F
-        const val FAST_SCAN_INTERVAL_MILLIS = 1_000L
         const val METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR = 3.6F
-        const val CONTINUOUS_SCAN_HEARTBEAT_INTERVAL_MILLIS = 15_000L
         const val CONTINUOUS_SCAN_RETRY_DELAY_MILLIS = 1_000L
     }
 }

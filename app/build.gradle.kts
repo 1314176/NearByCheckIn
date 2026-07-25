@@ -14,6 +14,7 @@ val localProperties = Properties().apply {
 }
 
 val baiduMapAk = localProperties.getProperty("BAIDU_MAP_AK").orEmpty()
+val amapMapAk = localProperties.getProperty("AMAP_MAP_AK").orEmpty()
 
 android {
     namespace = "com.wu.nearbycheckin"
@@ -22,6 +23,7 @@ android {
     defaultConfig {
         applicationId = "com.wu.nearbycheckin"
         manifestPlaceholders["BAIDU_MAP_AK"] = baiduMapAk
+        manifestPlaceholders["AMAP_MAP_AK"] = amapMapAk
         minSdk = 26
         targetSdk = 37
         versionCode = 1

@@ -14,7 +14,6 @@ import com.wu.nearbycheckin.domain.model.MapCommand
 import com.wu.nearbycheckin.domain.model.MapOperationResult
 import com.wu.nearbycheckin.domain.model.MapOperationStatus
 import com.wu.nearbycheckin.domain.model.MapProvider
-import com.wu.nearbycheckin.domain.repository.CheckInTransactionRepository
 import com.wu.nearbycheckin.platform.maps.AmapMapAdapter
 import com.wu.nearbycheckin.platform.maps.BaiduMapAdapter
 
@@ -24,12 +23,13 @@ import com.wu.nearbycheckin.platform.maps.BaiduMapAdapter
 class DualMapCommandWorker(
     service: AccessibilityService,
     private val coordinator: CheckInCoordinator,
-    private val repository: CheckInTransactionRepository,
     private val onStatusChanged: (String) -> Unit
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resultProbe = MapOperationResultProbe(service)
+    private val windowRecoveryPolicy =
+        MapWindowRecoveryPolicy()
     private var activeCommand: MapCommand? = null
 
     val isBusy: Boolean
@@ -58,13 +58,9 @@ class DualMapCommandWorker(
         activeCommand = null
     }
 
-    // 在双地图窗口就绪时领取一个命令。
+    // 领取下一个命令并在地图位于后台时保留任务等待窗口恢复。
     private fun processNextCommand() {
         if (activeCommand != null) {
-            return
-        }
-        val diagnostics = repository.currentSnapshot().diagnostics
-        if (!diagnostics.baiduReady || !diagnostics.amapReady) {
             return
         }
 
@@ -101,11 +97,8 @@ class DualMapCommandWorker(
         val rootNode = resultProbe.findWindowRootNode(
             command.provider.packageName()
         )
-        val adjacentRootNode = resultProbe.findWindowRootNode(
-            command.provider.other().packageName()
-        )
-        if (rootNode == null || adjacentRootNode == null) {
-            waitForWindowsBeforeStep(
+        if (rootNode == null) {
+            waitForTargetWindowBeforeStep(
                 command = command,
                 stepIndex = stepIndex,
                 startedAtMillis = startedAtMillis,
@@ -168,28 +161,14 @@ class DualMapCommandWorker(
         )
     }
 
-    // 在双地图窗口短暂丢失时保留当前步骤并等待恢复。
-    private fun waitForWindowsBeforeStep(
+    // 在目标地图转入后台时保留当前命令与步骤并等待恢复。
+    private fun waitForTargetWindowBeforeStep(
         command: MapCommand,
         stepIndex: Int,
         startedAtMillis: Long,
         windowWaitAttempt: Int
     ) {
-        if (windowWaitAttempt >= MAP_WINDOW_WAIT_MAX_ATTEMPTS) {
-            finishCommandAsWindowsUnavailable(
-                command = command,
-                startedAtMillis = startedAtMillis
-            )
-            return
-        }
-        if (
-            windowWaitAttempt == 0 ||
-            windowWaitAttempt % MAP_WINDOW_STATUS_INTERVAL_ATTEMPTS == 0
-        ) {
-            onStatusChanged(
-                "双地图窗口暂不可用，正在等待恢复分屏"
-            )
-        }
+        reportBackgroundWaitingIfNeeded(windowWaitAttempt)
         mainHandler.postDelayed(
             {
                 executeStep(
@@ -199,7 +178,9 @@ class DualMapCommandWorker(
                     windowWaitAttempt = windowWaitAttempt + 1
                 )
             },
-            MAP_WINDOW_WAIT_DELAY_MILLIS
+            windowRecoveryPolicy.nextWaitDelayMillis(
+                windowWaitAttempt
+            )
         )
     }
 
@@ -215,20 +196,14 @@ class DualMapCommandWorker(
                 if (activeCommand?.commandId != command.commandId) {
                     return@postDelayed
                 }
-                if (!areDualMapWindowsAvailable()) {
-                    if (windowWaitAttempt >= MAP_WINDOW_WAIT_MAX_ATTEMPTS) {
-                        finishCommandAsWindowsUnavailable(
-                            command = command,
-                            startedAtMillis = startedAtMillis
-                        )
-                    } else {
-                        scheduleResultVerification(
-                            command = command,
-                            startedAtMillis = startedAtMillis,
-                            verificationAttempt = verificationAttempt,
-                            windowWaitAttempt = windowWaitAttempt + 1
-                        )
-                    }
+                if (!isTargetMapWindowAvailable(command.provider)) {
+                    reportBackgroundWaitingIfNeeded(windowWaitAttempt)
+                    scheduleResultVerification(
+                        command = command,
+                        startedAtMillis = startedAtMillis,
+                        verificationAttempt = verificationAttempt,
+                        windowWaitAttempt = windowWaitAttempt + 1
+                    )
                     return@postDelayed
                 }
                 val probeResult = resultProbe.probe(
@@ -281,30 +256,29 @@ class DualMapCommandWorker(
         )
     }
 
-    // 读取当前无障碍窗口并确认百度、高德同时存在。
-    private fun areDualMapWindowsAvailable(): Boolean {
+    // 确认当前命令对应的地图窗口已恢复为可访问状态。
+    private fun isTargetMapWindowAvailable(
+        provider: MapProvider
+    ): Boolean {
         return resultProbe.findWindowRootNode(
-            BAIDU_MAP_PACKAGE_NAME
-        ) != null && resultProbe.findWindowRootNode(
-            AMAP_PACKAGE_NAME
+            provider.packageName()
         ) != null
     }
 
-    // 窗口长时不可用时将事务转为可恢复阻断而非失败。
-    private fun finishCommandAsWindowsUnavailable(
-        command: MapCommand,
-        startedAtMillis: Long
+    // 按节流策略提示后台等待状态且不改变系统窗口或当前命令。
+    private fun reportBackgroundWaitingIfNeeded(
+        windowWaitAttempt: Int
     ) {
-        finishCommand(
-            command = command,
-            result = createOperationResult(
-                command = command,
-                status = MapOperationStatus.BLOCKED,
-                startedAtMillis = startedAtMillis,
-                failureCode = DUAL_MAP_WINDOWS_UNAVAILABLE_CODE,
-                failureMessage = "双地图分屏窗口不可用，请恢复分屏后继续",
-                evidenceText = "百度或高德窗口根节点不可用"
+        if (
+            !windowRecoveryPolicy.shouldReportWaiting(
+                windowWaitAttempt
             )
+        ) {
+            return
+        }
+        onStatusChanged(
+            "双地图位于后台，已保留当前任务；" +
+                    "恢复双窗口后将从当前步骤继续执行"
         )
     }
 
@@ -371,14 +345,6 @@ class DualMapCommandWorker(
         }
     }
 
-    // 返回当前地图服务商的另一端。
-    private fun MapProvider.other(): MapProvider {
-        return when (this) {
-            MapProvider.BAIDU -> MapProvider.AMAP
-            MapProvider.AMAP -> MapProvider.BAIDU
-        }
-    }
-
     private companion object {
         const val WORKER_ID = "dual_map_accessibility_worker"
         const val BAIDU_MAP_PACKAGE_NAME = "com.baidu.BaiduMap"
@@ -389,10 +355,5 @@ class DualMapCommandWorker(
         const val MAP_OPERATION_STEP_DELAY_MILLIS = 1_500L
         const val MAP_RESULT_VERIFY_DELAY_MILLIS = 2_000L
         const val MAP_RESULT_VERIFY_MAX_ATTEMPTS = 5
-        const val MAP_WINDOW_WAIT_DELAY_MILLIS = 1_000L
-        const val MAP_WINDOW_WAIT_MAX_ATTEMPTS = 30
-        const val MAP_WINDOW_STATUS_INTERVAL_ATTEMPTS = 5
-        const val DUAL_MAP_WINDOWS_UNAVAILABLE_CODE =
-            "DUAL_MAP_WINDOWS_UNAVAILABLE"
     }
 }

@@ -38,6 +38,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 
 import com.wu.nearbycheckin.app.NearbyCheckInApplication
+import com.wu.nearbycheckin.platform.multiwindow.DualMapPaneLaunchPolicy
 import com.wu.nearbycheckin.presentation.components.CyberpunkKVBackground
 import com.wu.nearbycheckin.presentation.components.GlowRadarOverlay
 import com.wu.nearbycheckin.ui.theme.NearbyCheckInTheme
@@ -59,8 +60,22 @@ class MainActivity : ComponentActivity() {
     private val locationPermissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
-        ) {
-            viewModel.onEvent(MainUiEvent.RetryStartCruise)
+        ) { permissions ->
+            val locationGranted =
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ==
+                        true ||
+                        permissions[
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        ] == true
+            if (locationGranted) {
+                viewModel.onEvent(MainUiEvent.RetryStartCruise)
+            } else {
+                Toast.makeText(
+                    this,
+                    "未授予定位权限，巡航自动化未启动",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
 
     private val notificationPermissionLauncher =
@@ -176,12 +191,7 @@ class MainActivity : ComponentActivity() {
     private fun handleEffect(effect: MainUiEffect) {
         when (effect) {
             MainUiEffect.RequestLocationPermission ->
-                locationPermissionLauncher.launch(
-                    arrayOf(
-                        Manifest.permission.ACCESS_COARSE_LOCATION,
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                    )
-                )
+                requestLocationPermission()
             MainUiEffect.RequestNotificationPermission -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     notificationPermissionLauncher.launch(
@@ -204,6 +214,21 @@ class MainActivity : ComponentActivity() {
                     Toast.LENGTH_LONG
                 ).show()
         }
+    }
+
+    // 请求定位权限并提示选择可长期保留的“使用中允许”模式。
+    private fun requestLocationPermission() {
+        Toast.makeText(
+            this,
+            "请选择“仅在使用中允许”，不要选择“仅限这一次”",
+            Toast.LENGTH_LONG
+        ).show()
+        locationPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+        )
     }
 
     // 打开系统悬浮窗授权页面并等待结果。
@@ -293,9 +318,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         val baiduIntent = Intent(baiduLaunchIntent).apply {
-            removeFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            removeFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
-            removeFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+            flags = DualMapPaneLaunchPolicy
+                .currentPaneReplacementFlags(flags)
         }
         try {
             Log.i(TAG, "请求百度地图替换应用所在窗口")
