@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 15:10
+// @Time: 2026/07/20 18:37
 // @Author: MrWu
 // @File: CruiseDiscoveryController.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.cruise
+
 
 import java.util.Locale
 
@@ -21,9 +23,10 @@ import android.util.Log
 
 import androidx.core.content.ContextCompat
 
-import com.wu.nearbycheckin.application.usecase.SubmitCandidateUseCase
-import com.wu.nearbycheckin.domain.evaluator.CandidateDecision
-import com.wu.nearbycheckin.domain.model.NearbyPlaceCandidate
+import com.wu.nearbycheckin.core.domain.usecase.SubmitCandidateUseCase
+import com.wu.nearbycheckin.core.domain.evaluator.CandidateDecision
+import com.wu.nearbycheckin.core.model.NearbyPlaceCandidate
+
 
 /**
  * 封装定位、POI 搜索、静止心跳和候选标准化平台逻辑。

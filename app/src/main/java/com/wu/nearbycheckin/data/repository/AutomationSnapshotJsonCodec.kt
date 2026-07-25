@@ -1,31 +1,34 @@
-// @Time: 2026/07/20 12:30
+// @Time: 2026/07/20 18:07
 // @Author: MrWu
 // @File: AutomationSnapshotJsonCodec.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.data.repository
+
 
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
-import com.wu.nearbycheckin.domain.model.AutomationLogEntry
-import com.wu.nearbycheckin.domain.model.AutomationLogLevel
-import com.wu.nearbycheckin.domain.model.AutomationSession
-import com.wu.nearbycheckin.domain.model.AutomationSessionStatus
-import com.wu.nearbycheckin.domain.model.AutomationSnapshot
-import com.wu.nearbycheckin.domain.model.CheckInRecord
-import com.wu.nearbycheckin.domain.model.CheckInTransaction
-import com.wu.nearbycheckin.domain.model.DualMapCheckInRecord
-import com.wu.nearbycheckin.domain.model.DualMapState
-import com.wu.nearbycheckin.domain.model.DualMapTransactionStatus
-import com.wu.nearbycheckin.domain.model.MapCommand
-import com.wu.nearbycheckin.domain.model.MapCommandStatus
-import com.wu.nearbycheckin.domain.model.MapOperationResult
-import com.wu.nearbycheckin.domain.model.MapOperationStatus
-import com.wu.nearbycheckin.domain.model.MapProvider
-import com.wu.nearbycheckin.domain.model.NearbyPlaceCandidate
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AutomationLogEntry
+import com.wu.nearbycheckin.core.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.model.AutomationSession
+import com.wu.nearbycheckin.core.model.AutomationSessionStatus
+import com.wu.nearbycheckin.core.model.AutomationSnapshot
+import com.wu.nearbycheckin.core.model.CheckInRecord
+import com.wu.nearbycheckin.core.model.CheckInTransaction
+import com.wu.nearbycheckin.core.model.DualMapCheckInRecord
+import com.wu.nearbycheckin.core.model.DualMapState
+import com.wu.nearbycheckin.core.model.DualMapTransactionStatus
+import com.wu.nearbycheckin.core.model.MapCommand
+import com.wu.nearbycheckin.core.model.MapCommandStatus
+import com.wu.nearbycheckin.core.model.MapOperationResult
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.NearbyPlaceCandidate
+
 
 /**
  * 负责 AutomationSnapshot 与可升级 JSON 之间的确定性转换。

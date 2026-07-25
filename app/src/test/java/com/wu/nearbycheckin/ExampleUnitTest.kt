@@ -1,8 +1,16 @@
+// @Time: 2026/06/25 04:16
+// @Author: MrWu
+// @File: ExampleUnitTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin
+
 
 import org.junit.Test
 
 import org.junit.Assert.*
+
 
 /**
  * 在开发主机上执行的本地单元测试示例。

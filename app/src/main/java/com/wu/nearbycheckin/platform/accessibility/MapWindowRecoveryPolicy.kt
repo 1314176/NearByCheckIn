@@ -1,9 +1,11 @@
-// @Time: 2026/07/26 00:10
+// @Time: 2026/07/26 00:00
 // @Author: MrWu
 // @File: MapWindowRecoveryPolicy.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.accessibility
+
 
 /**
  * 控制后台地图窗口恢复请求的频率与等待退避。

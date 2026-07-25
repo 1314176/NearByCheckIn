@@ -1,13 +1,16 @@
-// @Time: 2026/07/20 14:00
+// @Time: 2026/07/20 18:29
 // @Author: MrWu
 // @File: MainUiState.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.presentation.main
 
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
-import com.wu.nearbycheckin.domain.model.AutomationLogEntry
-import com.wu.nearbycheckin.domain.model.CheckInRecord
+
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AutomationLogEntry
+import com.wu.nearbycheckin.core.model.CheckInRecord
+
 
 /**
  * 保存主界面纯渲染所需的全部不可变状态。

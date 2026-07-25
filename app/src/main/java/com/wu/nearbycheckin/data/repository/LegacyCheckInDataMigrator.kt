@@ -1,24 +1,28 @@
-// @Time: 2026/07/20 12:20
+// @Time: 2026/07/20 18:05
 // @Author: MrWu
 // @File: LegacyCheckInDataMigrator.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.data.repository
 
+
 import android.content.Context
 
+import com.wu.nearbycheckin.core.domain.repository.LegacyDataCleaner
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AutomationSnapshot
+import com.wu.nearbycheckin.core.model.MapOperationStatus
 import com.wu.nearbycheckin.data.legacy.AccessibilityDiagnosticsRepository
 import com.wu.nearbycheckin.data.legacy.CheckInRepository
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
-import com.wu.nearbycheckin.domain.model.AutomationSnapshot
-import com.wu.nearbycheckin.domain.model.MapOperationStatus
+
 
 /**
  * 将旧记录与诊断数据幂等迁移到 V4 唯一事实来源。
  */
 class LegacyCheckInDataMigrator(
     context: Context
-) {
+) : LegacyDataCleaner {
 
     private val legacyCheckInRepository = CheckInRepository(
         context.applicationContext
@@ -81,7 +85,7 @@ class LegacyCheckInDataMigrator(
     }
 
     // 清理用户确认范围内的旧版本兼容记录。
-    fun clearLegacyData(): Boolean {
+    override fun clearLegacyData(): Boolean {
         return legacyCheckInRepository.clearAllRecords()
     }
 

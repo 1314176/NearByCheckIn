@@ -1,10 +1,11 @@
-// @Time: 2026/06/29 05:06
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: BaiduMapSdkManager.kt
 // @Software: Android Studio
 
 
 @file:Suppress("SpellCheckingInspection")
+
 
 package com.wu.nearbycheckin.platform.cruise
 
@@ -14,6 +15,7 @@ import android.util.Log
 
 import com.baidu.mapapi.CoordType
 import com.baidu.mapapi.SDKInitializer
+
 
 /**
  * 统一管理百度地图SDK的隐私声明和初始化状态。

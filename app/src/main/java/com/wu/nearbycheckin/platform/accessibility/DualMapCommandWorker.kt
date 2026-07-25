@@ -1,21 +1,24 @@
-// @Time: 2026/07/20 15:45
+// @Time: 2026/07/20 18:40
 // @Author: MrWu
 // @File: DualMapCommandWorker.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.accessibility
+
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
 
-import com.wu.nearbycheckin.domain.coordinator.CheckInCoordinator
-import com.wu.nearbycheckin.domain.model.MapCommand
-import com.wu.nearbycheckin.domain.model.MapOperationResult
-import com.wu.nearbycheckin.domain.model.MapOperationStatus
-import com.wu.nearbycheckin.domain.model.MapProvider
+import com.wu.nearbycheckin.core.domain.coordinator.CheckInCoordinator
+import com.wu.nearbycheckin.core.model.MapCommand
+import com.wu.nearbycheckin.core.model.MapOperationResult
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.platform.maps.AmapMapAdapter
 import com.wu.nearbycheckin.platform.maps.BaiduMapAdapter
+
 
 /**
  * 串行领取地图命令、调用 Adapter 并回写结果证据。

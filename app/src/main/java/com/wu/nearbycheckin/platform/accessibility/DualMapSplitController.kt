@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 15:50
+// @Time: 2026/07/20 18:41
 // @Author: MrWu
 // @File: DualMapSplitController.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.accessibility
+
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
@@ -12,8 +14,9 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.platform.multiwindow.DualMapLaunchActivity
+
 
 /**
  * 只负责建立百度和高德系统分屏窗口。
