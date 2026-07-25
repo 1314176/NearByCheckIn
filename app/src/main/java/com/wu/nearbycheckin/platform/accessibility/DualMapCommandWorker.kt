@@ -79,9 +79,18 @@ class DualMapCommandWorker(
         val command = coordinator.claimNextCommand(WORKER_ID)
             ?: return
         activeCommand = command
-        onStatusChanged(
-            "正在执行${command.provider.displayName()}地图命令，" +
-                    "attempt=${command.attempt}"
+        val profile = command.provider.uiProfile()
+        reportStructuredStatus(
+            event = "命令开始",
+            structuredEvidence = buildMapUiEvidence(
+                provider = command.provider,
+                packageName = profile.packageName,
+                appVersion = appVersion(profile.packageName),
+                profileVersion = profile.profileVersion,
+                page = MapUiPage.UNKNOWN,
+                action = MapUiAction.WAIT,
+                evidence = "开始执行命令，attempt=${command.attempt}"
+            )
         )
         mainHandler.postDelayed(
             {
@@ -147,7 +156,10 @@ class DualMapCommandWorker(
                 profile = profile,
                 decision = unsupportedDecision
             )
-            onStatusChanged("页面识别：$unsupportedEvidence")
+            reportStructuredStatus(
+                event = "页面识别",
+                structuredEvidence = unsupportedEvidence
+            )
             finishCommand(
                 command = command,
                 result = createOperationResult(
@@ -182,7 +194,10 @@ class DualMapCommandWorker(
             profile = profile,
             decision = decision
         )
-        onStatusChanged("页面识别：$profileEvidence")
+        reportStructuredStatus(
+            event = "页面识别",
+            structuredEvidence = profileEvidence
+        )
 
         val outcome = executionPolicy.outcomeFor(
             page = decision.page,
@@ -202,7 +217,10 @@ class DualMapCommandWorker(
 
         val action = decision.action
         if (action == null || action == MapUiAction.WAIT) {
-            onStatusChanged("动作等待：$profileEvidence")
+            reportStructuredStatus(
+                event = "动作等待",
+                structuredEvidence = profileEvidence
+            )
             mainHandler.postDelayed(
                 {
                     executeNextAction(
@@ -224,8 +242,14 @@ class DualMapCommandWorker(
             rootNode = rootNode,
             action = action
         )
-        onStatusChanged(
-            "动作执行：$profileEvidence；result=${clickResult.message}"
+        val actionEvidence = appendBoundedWorkerEvidence(
+            structuredEvidence = profileEvidence,
+            key = "result",
+            value = clickResult.message
+        )
+        reportStructuredStatus(
+            event = "动作执行",
+            structuredEvidence = actionEvidence
         )
         if (!clickResult.success) {
             finishCommand(
@@ -238,8 +262,7 @@ class DualMapCommandWorker(
                         "${command.provider.name}_ACTION_FAILED",
                     failureMessage = clickResult.message,
                     evidenceText = appendProbeEvidence(
-                        profileEvidence =
-                            "$profileEvidence；result=${clickResult.message}",
+                        profileEvidence = actionEvidence,
                         packageName = packageName
                     )
                 )
@@ -277,7 +300,10 @@ class DualMapCommandWorker(
         repeatedUnknownCount: Int,
         windowWaitAttempt: Int
     ) {
-        reportBackgroundWaitingIfNeeded(windowWaitAttempt)
+        reportBackgroundWaitingIfNeeded(
+            command = command,
+            windowWaitAttempt = windowWaitAttempt
+        )
         mainHandler.postDelayed(
             {
                 executeNextAction(
@@ -378,15 +404,15 @@ class DualMapCommandWorker(
         profile: ProviderUiProfile,
         decision: MapUiDecision
     ): String {
-        return listOf(
-            "provider=${provider.name}",
-            "package=${snapshot.packageName}",
-            "appVersion=${snapshot.appVersion}",
-            "profileVersion=${profile.profileVersion}",
-            "page=${decision.page.name}",
-            "action=${decision.action?.name.orEmpty()}",
-            "evidence=${decision.evidence}"
-        ).joinToString(separator = "；")
+        return buildMapUiEvidence(
+            provider = provider,
+            packageName = snapshot.packageName,
+            appVersion = snapshot.appVersion,
+            profileVersion = profile.profileVersion,
+            page = decision.page,
+            action = decision.action,
+            evidence = decision.evidence
+        )
     }
 
     // 追加旧 Probe 只读证据但不使用其状态覆盖 Profile 终态。
@@ -395,15 +421,29 @@ class DualMapCommandWorker(
         packageName: String
     ): String {
         val probeEvidence = resultProbe.probe(packageName).evidenceText
-        return if (probeEvidence.isBlank()) {
-            profileEvidence
-        } else {
-            "$profileEvidence；probeEvidence=$probeEvidence"
-        }
+        return appendBoundedWorkerEvidence(
+            structuredEvidence = profileEvidence,
+            key = "probeEvidence",
+            value = probeEvidence
+        )
     }
 
-    // 按节流策略提示后台等待状态且不改变系统窗口或当前命令。
+    // 统一输出包含完整页面循环字段的结构化状态。
+    private fun reportStructuredStatus(
+        event: String,
+        structuredEvidence: String
+    ) {
+        onStatusChanged(
+            buildStructuredStatusText(
+                event = event,
+                structuredEvidence = structuredEvidence
+            )
+        )
+    }
+
+    // 按节流策略输出结构化后台等待状态且不改变当前命令。
     private fun reportBackgroundWaitingIfNeeded(
+        command: MapCommand,
         windowWaitAttempt: Int
     ) {
         if (
@@ -413,9 +453,20 @@ class DualMapCommandWorker(
         ) {
             return
         }
-        onStatusChanged(
-            "双地图位于后台，已保留当前任务；" +
-                    "恢复双窗口后将从当前页面继续执行"
+        val profile = command.provider.uiProfile()
+        reportStructuredStatus(
+            event = "后台等待",
+            structuredEvidence = buildMapUiEvidence(
+                provider = command.provider,
+                packageName = profile.packageName,
+                appVersion = appVersion(profile.packageName),
+                profileVersion = profile.profileVersion,
+                page = MapUiPage.UNKNOWN,
+                action = MapUiAction.WAIT,
+                evidence =
+                    "目标地图窗口不可用，等待恢复，" +
+                            "attempt=$windowWaitAttempt"
+            )
         )
     }
 
@@ -439,7 +490,8 @@ class DualMapCommandWorker(
             matchedNode = "",
             failureCode = failureCode,
             failureMessage = failureMessage,
-            evidenceText = evidenceText,
+            evidenceText =
+                evidenceText.take(WORKER_EVIDENCE_MAX_LENGTH),
             commandId = command.commandId,
             transactionId = command.transactionId
         )
@@ -454,16 +506,16 @@ class DualMapCommandWorker(
             commandId = command.commandId,
             result = result
         )
-        onStatusChanged(
-            if (completed) {
-                "${command.provider.displayName()}地图结果已回写：" +
-                        result.status
+        reportStructuredStatus(
+            event = if (completed) {
+                "结果已回写"
             } else {
-                "${command.provider.displayName()}地图结果已被幂等忽略"
-            }
+                "结果幂等忽略"
+            },
+            structuredEvidence = result.evidenceText
         )
         activeCommand = null
-        mainHandler.post(pollRunnable)
+        processNextCommand()
     }
 
     // 返回地图服务商对应的包名。

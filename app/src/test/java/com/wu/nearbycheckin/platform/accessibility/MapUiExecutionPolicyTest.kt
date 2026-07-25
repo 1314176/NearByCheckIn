@@ -98,20 +98,20 @@ class MapUiExecutionPolicyTest {
         )
     }
 
-    // 验证只有相同未知页面指纹才累计重复次数。
+    // 验证未知页面首次出现和指纹变化时都从零重新计数。
     @Test
-    fun countsOnlyRepeatedUnknownFingerprints() {
+    fun resetsUnknownCountForFirstOrChangedFingerprint() {
         assertEquals(
-            3,
+            0,
             policy.repeatedUnknownCountFor(
                 page = MapUiPage.UNKNOWN,
-                fingerprint = "same",
-                lastFingerprint = "same",
-                repeatedUnknownCount = 2
+                fingerprint = "first",
+                lastFingerprint = "",
+                repeatedUnknownCount = 0
             )
         )
         assertEquals(
-            1,
+            0,
             policy.repeatedUnknownCountFor(
                 page = MapUiPage.UNKNOWN,
                 fingerprint = "changed",
@@ -119,6 +119,61 @@ class MapUiExecutionPolicyTest {
                 repeatedUnknownCount = 2
             )
         )
+    }
+
+    // 验证相同未知页面连续重复三次后才达到停止阈值。
+    @Test
+    fun stopsOnlyAfterThreeRepeatedUnknownFingerprints() {
+        val firstCount = policy.repeatedUnknownCountFor(
+            page = MapUiPage.UNKNOWN,
+            fingerprint = "same",
+            lastFingerprint = "",
+            repeatedUnknownCount = 0
+        )
+        val firstRepeatCount = policy.repeatedUnknownCountFor(
+            page = MapUiPage.UNKNOWN,
+            fingerprint = "same",
+            lastFingerprint = "same",
+            repeatedUnknownCount = firstCount
+        )
+        val secondRepeatCount = policy.repeatedUnknownCountFor(
+            page = MapUiPage.UNKNOWN,
+            fingerprint = "same",
+            lastFingerprint = "same",
+            repeatedUnknownCount = firstRepeatCount
+        )
+        val thirdRepeatCount = policy.repeatedUnknownCountFor(
+            page = MapUiPage.UNKNOWN,
+            fingerprint = "same",
+            lastFingerprint = "same",
+            repeatedUnknownCount = secondRepeatCount
+        )
+
+        assertEquals(0, firstCount)
+        assertEquals(1, firstRepeatCount)
+        assertEquals(2, secondRepeatCount)
+        assertEquals(
+            MapUiExecutionOutcome.CONTINUE,
+            policy.outcomeFor(
+                page = MapUiPage.UNKNOWN,
+                actionCount = 0,
+                repeatedUnknownCount = secondRepeatCount
+            )
+        )
+        assertEquals(3, thirdRepeatCount)
+        assertEquals(
+            MapUiExecutionOutcome.UNSUPPORTED,
+            policy.outcomeFor(
+                page = MapUiPage.UNKNOWN,
+                actionCount = 0,
+                repeatedUnknownCount = thirdRepeatCount
+            )
+        )
+    }
+
+    // 验证非未知页面始终清零未知页面重复次数。
+    @Test
+    fun clearsUnknownCountForKnownPage() {
         assertEquals(
             0,
             policy.repeatedUnknownCountFor(

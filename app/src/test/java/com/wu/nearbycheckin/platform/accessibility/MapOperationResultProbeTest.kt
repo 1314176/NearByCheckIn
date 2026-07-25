@@ -40,4 +40,37 @@ class MapOperationResultProbeTest {
             resolveMapOperationProbeStatus("当前地点已打卡")
         )
     }
+
+    // 验证 Probe 证据会清理换行和内部字段分隔符。
+    @Test
+    fun sanitizesProbeEvidenceSeparatorsAndLineBreaks() {
+        assertEquals(
+            "第一行 第二行 内部 字段",
+            formatMapOperationProbeEvidence(
+                listOf(" 第一行\r\n第二行/内部；字段 ")
+            )
+        )
+    }
+
+    // 验证 Probe 证据的单条文本最多保留八十个字符。
+    @Test
+    fun limitsEachProbeEvidenceEntry() {
+        assertEquals(
+            "a".repeat(80),
+            formatMapOperationProbeEvidence(
+                listOf("a".repeat(120))
+            )
+        )
+    }
+
+    // 验证 Probe 证据总长度不超过五百一十二个字符。
+    @Test
+    fun limitsTotalProbeEvidenceLength() {
+        assertEquals(
+            512,
+            formatMapOperationProbeEvidence(
+                List(10) { "a".repeat(80) }
+            ).length
+        )
+    }
 }

@@ -88,6 +88,31 @@ internal fun resolveMapOperationProbeStatus(
     }
 }
 
+// 清理证据值中的换行和结构化字段分隔符并限制长度。
+internal fun sanitizeEvidenceValue(
+    value: String,
+    maxLength: Int = EVIDENCE_ENTRY_MAX_LENGTH
+): String {
+    return value
+        .replace(EVIDENCE_SEPARATOR_REGEX, " ")
+        .replace(EVIDENCE_WHITESPACE_REGEX, " ")
+        .trim()
+        .take(maxLength)
+}
+
+// 把可见文本转换为条目和总长度均受限的 Probe 证据。
+internal fun formatMapOperationProbeEvidence(
+    visibleTexts: List<String>
+): String {
+    return visibleTexts
+        .asSequence()
+        .take(EVIDENCE_TEXT_COUNT)
+        .map(::sanitizeEvidenceValue)
+        .filter(String::isNotBlank)
+        .joinToString(separator = " / ")
+        .take(PROBE_EVIDENCE_MAX_LENGTH)
+}
+
 /**
  * 隔离无障碍节点查找、证据采集和结果关键词解析。
  */
@@ -132,9 +157,8 @@ class MapOperationResultProbe(
             status = resolveMapOperationProbeStatus(
                 visibleTexts.joinToString(separator = " ")
             ),
-            evidenceText = visibleTexts
-                .take(EVIDENCE_TEXT_COUNT)
-                .joinToString(separator = " / ")
+            evidenceText =
+                formatMapOperationProbeEvidence(visibleTexts)
         )
     }
 
@@ -200,9 +224,14 @@ class MapOperationResultProbe(
         const val PACKAGE_SCAN_DEPTH = 4
         const val TEXT_SCAN_DEPTH = 12
         const val TEXT_MAX_COUNT = 120
-        const val EVIDENCE_TEXT_COUNT = 8
     }
 }
+
+private const val EVIDENCE_TEXT_COUNT = 8
+private const val EVIDENCE_ENTRY_MAX_LENGTH = 80
+private const val PROBE_EVIDENCE_MAX_LENGTH = 512
+private val EVIDENCE_SEPARATOR_REGEX = Regex("[/；]+")
+private val EVIDENCE_WHITESPACE_REGEX = Regex("\\s+")
 
 private val SUCCESS_TEXT_MARKERS = listOf(
     "打卡成功",

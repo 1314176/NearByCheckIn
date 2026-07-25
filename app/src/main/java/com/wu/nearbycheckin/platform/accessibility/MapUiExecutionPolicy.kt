@@ -65,7 +65,7 @@ class MapUiExecutionPolicy(
         ) {
             repeatedUnknownCount + 1
         } else {
-            1
+            0
         }
     }
 
