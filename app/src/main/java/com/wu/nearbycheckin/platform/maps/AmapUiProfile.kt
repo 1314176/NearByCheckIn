@@ -27,7 +27,8 @@ object AmapUiProfile : ProviderUiProfile {
                     MapUiAction.CLICK_CHECK_IN,
                     "当前位置直接打卡"
                 )
-            snapshot.hasAnyClickableLabel(listOf("足迹", "我的足迹")) ->
+            snapshot.hasAnyClickableLabel(listOf("足迹", "我的足迹")) &&
+                    !snapshot.hasClickableLabel("打卡") ->
                 decision(
                     MapUiPage.MINE,
                     MapUiAction.CLICK_FOOTPRINT,

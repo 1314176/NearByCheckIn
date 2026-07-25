@@ -41,6 +41,17 @@ class AmapUiProfileTest {
         assertEquals(MapUiAction.CLICK_FOOTPRINT, decision.action)
     }
 
+    // 验证未知页面同时出现打卡和足迹时不会错误进入足迹。
+    @Test
+    fun waitsWhenCheckInAndFootprintAreBothClickableWithoutLocationEvidence() {
+        val decision = profile.decide(
+            snapshot(clickable = listOf("打卡", "我的足迹"))
+        )
+
+        assertEquals(MapUiPage.UNKNOWN, decision.page)
+        assertEquals(MapUiAction.WAIT, decision.action)
+    }
+
     // 验证明确成功证据进入成功终态。
     @Test
     fun recognizesExplicitSuccessEvidence() {
