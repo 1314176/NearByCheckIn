@@ -13,6 +13,8 @@ package com.wu.nearbycheckin.platform.maps
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
+import com.wu.nearbycheckin.core.model.MapProvider
+
 
 /**
  * 保存百度地图可访问节点的只读摘要。
@@ -90,6 +92,32 @@ object BaiduMapAdapter {
         )
     }
 
+    // 采集当前百度窗口的纯 Kotlin 页面快照。
+    fun captureSnapshot(
+        rootNode: AccessibilityNodeInfo?,
+        appVersion: String
+    ): MapUiSnapshot {
+        return MapUiSnapshotCollector.collect(
+            rootNode = rootNode,
+            packageName = BaiduUiProfile.packageName,
+            appVersion = appVersion
+        )
+    }
+
+    // 执行百度 Profile 返回的单个动作。
+    fun execute(
+        rootNode: AccessibilityNodeInfo?,
+        action: MapUiAction
+    ): AccessibilityClickResult {
+        return AccessibilityNodeActions.clickFirstMatchingLabel(
+            rootNode = rootNode,
+            labels = MapUiActionLabels.forProvider(
+                MapProvider.BAIDU,
+                action
+            )
+        )
+    }
+
     /**
      * 点击百度地图“我的”入口。
      *
@@ -97,10 +125,7 @@ object BaiduMapAdapter {
      * @return 点击结果。
      */
     fun clickMine(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
-            rootNode = rootNode,
-            labels = listOf("我的")
-        )
+        return execute(rootNode, MapUiAction.CLICK_MINE)
     }
 
     /**
@@ -110,10 +135,7 @@ object BaiduMapAdapter {
      * @return 点击结果。
      */
     fun clickCheckInPoint(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
-            rootNode = rootNode,
-            labels = listOf("打卡点")
-        )
+        return execute(rootNode, MapUiAction.CLICK_CHECK_IN_POINT)
     }
 
     /**
@@ -123,10 +145,7 @@ object BaiduMapAdapter {
      * @return 点击结果。
      */
     fun clickImmediateCheckIn(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
-            rootNode = rootNode,
-            labels = listOf("立即打卡", "立刻打卡")
-        )
+        return execute(rootNode, MapUiAction.CLICK_CHECK_IN)
     }
 
     /**

@@ -13,6 +13,8 @@ package com.wu.nearbycheckin.platform.maps
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
+import com.wu.nearbycheckin.core.model.MapProvider
+
 
 /**
  * 保存高德地图可访问节点的只读摘要。
@@ -90,6 +92,32 @@ object AmapMapAdapter {
         )
     }
 
+    // 采集当前高德窗口的纯 Kotlin 页面快照。
+    fun captureSnapshot(
+        rootNode: AccessibilityNodeInfo?,
+        appVersion: String
+    ): MapUiSnapshot {
+        return MapUiSnapshotCollector.collect(
+            rootNode = rootNode,
+            packageName = AmapUiProfile.packageName,
+            appVersion = appVersion
+        )
+    }
+
+    // 执行高德 Profile 返回的单个动作。
+    fun execute(
+        rootNode: AccessibilityNodeInfo?,
+        action: MapUiAction
+    ): AccessibilityClickResult {
+        return AccessibilityNodeActions.clickFirstMatchingLabel(
+            rootNode = rootNode,
+            labels = MapUiActionLabels.forProvider(
+                MapProvider.AMAP,
+                action
+            )
+        )
+    }
+
     /**
      * 点击高德地图“我的”入口。
      *
@@ -97,10 +125,7 @@ object AmapMapAdapter {
      * @return 点击结果。
      */
     fun clickMine(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
-            rootNode = rootNode,
-            labels = listOf("我的")
-        )
+        return execute(rootNode, MapUiAction.CLICK_MINE)
     }
 
     /**
@@ -110,10 +135,7 @@ object AmapMapAdapter {
      * @return 点击结果。
      */
     fun clickFootprint(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
-            rootNode = rootNode,
-            labels = listOf("足迹", "我的足迹")
-        )
+        return execute(rootNode, MapUiAction.CLICK_FOOTPRINT)
     }
 
     /**
@@ -123,10 +145,7 @@ object AmapMapAdapter {
      * @return 点击结果。
      */
     fun clickCheckIn(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
-            rootNode = rootNode,
-            labels = listOf("打卡", "点击打卡")
-        )
+        return execute(rootNode, MapUiAction.CLICK_CHECK_IN)
     }
 
     /**
