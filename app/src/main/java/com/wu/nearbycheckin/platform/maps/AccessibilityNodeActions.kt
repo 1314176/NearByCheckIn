@@ -1,13 +1,17 @@
-// @Time: 2026/07/10 16:20
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: AccessibilityNodeActions.kt
 // @Software: Android Studio
 
+
 @file:Suppress("SpellCheckingInspection")
+
 
 package com.wu.nearbycheckin.platform.maps
 
+
 import android.view.accessibility.AccessibilityNodeInfo
+
 
 /**
  * 保存一次无障碍节点点击结果。

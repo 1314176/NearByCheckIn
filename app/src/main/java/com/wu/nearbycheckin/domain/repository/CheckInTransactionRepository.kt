@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 12:00
+// @Time: 2026/07/20 18:00
 // @Author: MrWu
 // @File: CheckInTransactionRepository.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.domain.repository
+
 
 import kotlinx.coroutines.flow.StateFlow
 
@@ -11,6 +13,7 @@ import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.domain.model.AutomationLogLevel
 import com.wu.nearbycheckin.domain.model.AutomationSnapshot
 import com.wu.nearbycheckin.domain.model.MapCommand
+
 
 /**
  * 定义自动化快照唯一事实来源的原子读写契约。
