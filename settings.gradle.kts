@@ -1,4 +1,6 @@
 pluginManagement {
+    includeBuild("build-logic")
+
     repositories {
         google {
             content {
@@ -23,4 +25,9 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "NearbyCheckIn"
-include(":app")
+include(
+    ":app",
+    ":core:common",
+    ":core:model",
+    ":core:domain"
+)

@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 14:00
+// @Time: 2026/07/20 18:30
 // @Author: MrWu
 // @File: MainScreen.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.presentation.main
+
 
 import java.time.Instant
 import java.time.ZoneId
@@ -56,12 +58,13 @@ import androidx.compose.ui.unit.sp
 
 import com.wu.nearbycheckin.presentation.components.RadarColors
 
-import com.wu.nearbycheckin.application.usecase.RecordQueryScope
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
-import com.wu.nearbycheckin.domain.model.AutomationLogEntry
-import com.wu.nearbycheckin.domain.model.AutomationLogLevel
-import com.wu.nearbycheckin.domain.model.CheckInRecord
+import com.wu.nearbycheckin.core.domain.usecase.RecordQueryScope
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AutomationLogEntry
+import com.wu.nearbycheckin.core.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.model.CheckInRecord
 import com.wu.nearbycheckin.ui.theme.NearbyCheckInTheme
+
 
 private val checkInTimeFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("HH:mm:ss")

@@ -1,9 +1,11 @@
-// @Time: 2026/07/25 23:55
+// @Time: 2026/07/25 23:52
 // @Author: MrWu
 // @File: ContinuousScanPolicy.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.cruise
+
 
 /**
  * 根据候选发现结果和移动速度选择下一次 POI 扫描间隔。

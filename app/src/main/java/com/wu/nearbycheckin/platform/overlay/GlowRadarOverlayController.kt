@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 15:00
+// @Time: 2026/07/20 18:36
 // @Author: MrWu
 // @File: GlowRadarOverlayController.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.overlay
+
 
 import android.annotation.SuppressLint
 import android.app.Service
@@ -29,6 +31,7 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 import com.wu.nearbycheckin.presentation.components.GlowRadarOverlay
+
 
 /**
  * 封装系统悬浮窗的显示、拖动、位置持久化和生命周期。

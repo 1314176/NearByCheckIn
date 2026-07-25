@@ -1,11 +1,14 @@
-// @Time: 2026/07/20 14:00
+// @Time: 2026/07/20 18:29
 // @Author: MrWu
 // @File: MainUiEvent.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.presentation.main
 
-import com.wu.nearbycheckin.application.usecase.RecordQueryScope
+
+import com.wu.nearbycheckin.core.domain.usecase.RecordQueryScope
+
 
 /**
  * 表示主界面允许发送给 ViewModel 的全部用户事件。

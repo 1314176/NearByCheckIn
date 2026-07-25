@@ -1,9 +1,12 @@
 # NearbyCheckIn
 
-NearbyCheckIn 是一个 Android/Kotlin 应用，用于在前台服务中持续获取定位、检索附近百度地图 POI，并通过事务协调器串行完成百度地图和高德地图双端打卡。项目当前采用 V4.0 分层架构。
+NearbyCheckIn 是一个 Android/Kotlin 应用，用于在前台服务中持续获取定位、检索附近百度地图 POI，并通过事务协调器串行完成百度地图和高德地图双端打卡。项目当前已完成企业级多模块架构第一阶段。
 
 ## 当前状态
 
+- 已建立 `build-logic`、`:core:common`、`:core:model` 和 `:core:domain`。
+- 已将模型、规则、状态机、协调器、Repository 端口、平台网关端口和用例迁移到纯 Kotlin 核心模块。
+- Android UI、Service、地图能力和现有 SharedPreferences 数据实现暂时保留在 `:app`。
 - 已接入 Kotlin、Jetpack Compose、Material 3、Android 前台服务和百度地图 Android SDK。
 - 已实现定位权限、通知权限、系统悬浮窗权限和无障碍服务入口。
 - 已实现 GPS/网络定位监听、百度 POI 周边检索、本地打卡记录保存和今日/全部记录查看。
@@ -118,13 +121,11 @@ BAIDU_MAP_AK=你的百度地图AK
 
 ## 目录说明
 
-- `app/`：`NearbyCheckInApplication` 与 `AppContainer`，集中创建进程级共享依赖。
-- `application/usecase/`：启动、停止、提交候选、查询记录和清理记录等业务入口。
-- `domain/model/`：无 Android 依赖的候选、事务、命令、结果、诊断、运行日志和自动化快照模型。
-- `domain/evaluator/`：纯 Kotlin 候选距离、停留、定位稳定、过期和去重规则。
-- `domain/statemachine/`：纯 Kotlin 双地图事务 reducer。
-- `domain/coordinator/`：串行协调候选、事务、状态机、命令、结果、重试和恢复。
-- `domain/repository/`：`CheckInTransactionRepository` 唯一事实来源契约。
+- `build-logic/`：统一纯 Kotlin 模块和测试配置的 Gradle Convention Plugin。
+- `core/common/`：跨模块稳定基础抽象和统一时钟。
+- `core/model/`：无 Android 依赖的候选、事务、命令、结果、诊断、运行日志和自动化快照模型。
+- `core/domain/`：候选规则、状态机、协调器、Repository/平台端口和应用用例。
+- `app/`：Android 应用入口、界面、平台能力、数据实现和依赖装配。
 - `data/repository/`：SharedPreferences 快照实现、JSON 编解码和旧数据迁移。
 - `data/legacy/`：迁移期只读兼容的旧记录与诊断仓储。
 - `presentation/main/`：`MainActivity`、`MainScreen`、`MainViewModel` 和 UI 契约。
@@ -141,6 +142,8 @@ BAIDU_MAP_AK=你的百度地图AK
 
 ## 后续计划
 
+- 第二阶段建立 `:core:database` 与 `:core:data`，使用 Room、DataStore 和显式迁移测试替换现有数据实现。
+- 后续阶段拆分 `:feature:cruise`、`:feature:automation`、`:feature:home` 和 `:core:ui`。
 - 真机采集百度地图“我的-打卡点-立即打卡”和高德地图“我的-足迹-打卡”目标页面节点，建立版本化 UI Profile。
 - 用真机 UI Profile 细化百度地图端成功、已打卡、失败、阻断和超时识别。
 - 用真机 UI Profile 细化高德地图端成功、已打卡、失败、阻断和超时识别。

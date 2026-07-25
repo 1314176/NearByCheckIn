@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 14:00
+// @Time: 2026/07/20 18:29
 // @Author: MrWu
 // @File: MainUiEffect.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.presentation.main
+
 
 /**
  * 表示必须由 Activity 一次性处理的系统导航动作。

@@ -1,10 +1,18 @@
+// @Time: 2026/06/25 04:16
+// @Author: MrWu
+// @File: Type.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.ui.theme
+
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+
 
 // 定义 Material 排版样式的起始配置。
 val Typography = Typography(

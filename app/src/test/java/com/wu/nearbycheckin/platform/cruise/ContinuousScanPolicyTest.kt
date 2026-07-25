@@ -1,12 +1,15 @@
-// @Time: 2026/07/25 23:55
+// @Time: 2026/07/25 23:52
 // @Author: MrWu
 // @File: ContinuousScanPolicyTest.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.cruise
 
+
 import org.junit.Assert.assertEquals
 import org.junit.Test
+
 
 /**
  * 验证静止连续扫描在活跃、耗尽、移动和高速状态间切换。

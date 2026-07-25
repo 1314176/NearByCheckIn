@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 15:20
+// @Time: 2026/07/20 18:38
 // @Author: MrWu
 // @File: CruiseService.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.cruise
+
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -16,9 +18,10 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 
 import com.wu.nearbycheckin.app.NearbyCheckInApplication
-import com.wu.nearbycheckin.domain.model.AutomationLogLevel
-import com.wu.nearbycheckin.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.core.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 import com.wu.nearbycheckin.platform.overlay.GlowRadarOverlayController
+
 
 /**
  * 只负责前台服务生命周期、通知与平台控制器装配。

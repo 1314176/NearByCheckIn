@@ -1,9 +1,11 @@
-// @Time: 2026/06/29 02:45
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: CyberBackground.kt
 // @Software: Android Studio
 
+
 package com.wu.nearbycheckin.presentation.components
+
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -18,6 +20,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+
 
 /**
  * 赛博朋克风格的高科技 KV 背景组件。

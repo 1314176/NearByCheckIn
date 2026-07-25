@@ -1,11 +1,14 @@
-// @Time: 2026/07/11 16:18
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: DualMapLaunchActivity.kt
 // @Software: Android Studio
 
+
 @file:Suppress("SpellCheckingInspection")
 
+
 package com.wu.nearbycheckin.platform.multiwindow
+
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -13,6 +16,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+
 
 /**
  * 作为前台中转页启动地图应用，减少无障碍服务后台直接打开外部应用导致的重复确认。

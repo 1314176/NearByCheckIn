@@ -1,4 +1,11 @@
+// @Time: 2026/06/25 04:16
+// @Author: MrWu
+// @File: Theme.kt
+// @Software: Android Studio
+
+
 @file:Suppress("SpellCheckingInspection")
+
 
 package com.wu.nearbycheckin.ui.theme
 
@@ -12,6 +19,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+
 
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,

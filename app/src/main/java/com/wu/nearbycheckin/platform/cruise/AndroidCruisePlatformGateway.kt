@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 13:00
+// @Time: 2026/07/20 18:18
 // @Author: MrWu
 // @File: AndroidCruisePlatformGateway.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.cruise
+
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
@@ -18,10 +20,11 @@ import android.view.accessibility.AccessibilityManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 
-import com.wu.nearbycheckin.application.gateway.CruisePlatformGateway
-import com.wu.nearbycheckin.application.gateway.CruisePrecheck
-import com.wu.nearbycheckin.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.core.domain.gateway.CruisePlatformGateway
+import com.wu.nearbycheckin.core.domain.gateway.CruisePrecheck
+import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 import com.wu.nearbycheckin.platform.accessibility.DualMapAccessibilityService
+
 
 /**
  * 使用 Android 系统能力实现巡航用例的平台端口。
