@@ -10,6 +10,7 @@ package com.wu.nearbycheckin.platform.accessibility
 import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
+import android.view.accessibility.AccessibilityNodeInfo
 
 import com.wu.nearbycheckin.core.domain.coordinator.CheckInCoordinator
 import com.wu.nearbycheckin.core.model.MapCommand
@@ -17,20 +18,28 @@ import com.wu.nearbycheckin.core.model.MapOperationResult
 import com.wu.nearbycheckin.core.model.MapOperationStatus
 import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.platform.maps.AmapMapAdapter
+import com.wu.nearbycheckin.platform.maps.AmapUiProfile
 import com.wu.nearbycheckin.platform.maps.BaiduMapAdapter
+import com.wu.nearbycheckin.platform.maps.BaiduUiProfile
+import com.wu.nearbycheckin.platform.maps.MapUiAction
+import com.wu.nearbycheckin.platform.maps.MapUiDecision
+import com.wu.nearbycheckin.platform.maps.MapUiPage
+import com.wu.nearbycheckin.platform.maps.MapUiSnapshot
+import com.wu.nearbycheckin.platform.maps.ProviderUiProfile
 
 
 /**
  * 串行领取地图命令、调用 Adapter 并回写结果证据。
  */
 class DualMapCommandWorker(
-    service: AccessibilityService,
+    private val service: AccessibilityService,
     private val coordinator: CheckInCoordinator,
     private val onStatusChanged: (String) -> Unit
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resultProbe = MapOperationResultProbe(service)
+    private val executionPolicy = MapUiExecutionPolicy()
     private val windowRecoveryPolicy =
         MapWindowRecoveryPolicy()
     private var activeCommand: MapCommand? = null
@@ -76,9 +85,8 @@ class DualMapCommandWorker(
         )
         mainHandler.postDelayed(
             {
-                executeStep(
+                executeNextAction(
                     command = command,
-                    stepIndex = 0,
                     startedAtMillis = System.currentTimeMillis()
                 )
             },
@@ -86,11 +94,13 @@ class DualMapCommandWorker(
         )
     }
 
-    // 按地图服务商执行一个 Adapter 步骤。
-    private fun executeStep(
+    // 根据当前页面 Profile 决策循环执行一个安全动作。
+    private fun executeNextAction(
         command: MapCommand,
-        stepIndex: Int,
         startedAtMillis: Long,
+        actionCount: Int = 0,
+        lastFingerprint: String = "",
+        repeatedUnknownCount: Int = 0,
         windowWaitAttempt: Int = 0
     ) {
         if (activeCommand?.commandId != command.commandId) {
@@ -101,36 +111,122 @@ class DualMapCommandWorker(
             command.provider.packageName()
         )
         if (rootNode == null) {
-            waitForTargetWindowBeforeStep(
+            waitForTargetWindowBeforeAction(
                 command = command,
-                stepIndex = stepIndex,
                 startedAtMillis = startedAtMillis,
+                actionCount = actionCount,
+                lastFingerprint = lastFingerprint,
+                repeatedUnknownCount = repeatedUnknownCount,
                 windowWaitAttempt = windowWaitAttempt
             )
             return
         }
-        val clickResult = when (command.provider) {
-            MapProvider.BAIDU -> when (stepIndex) {
-                0 -> BaiduMapAdapter.clickMine(rootNode)
-                1 -> BaiduMapAdapter.clickCheckInPoint(rootNode)
-                2 -> BaiduMapAdapter.clickImmediateCheckIn(rootNode)
-                else -> null
-            }
-            MapProvider.AMAP -> when (stepIndex) {
-                0 -> AmapMapAdapter.clickMine(rootNode)
-                1 -> AmapMapAdapter.clickFootprint(rootNode)
-                2 -> AmapMapAdapter.clickCheckIn(rootNode)
-                else -> null
-            }
-        }
-        if (clickResult == null) {
-            scheduleResultVerification(
+
+        val profile = command.provider.uiProfile()
+        val packageName = profile.packageName
+        val currentAppVersion = appVersion(packageName)
+        val snapshot = command.provider.captureSnapshot(
+            rootNode = rootNode,
+            appVersion = currentAppVersion
+        )
+        if (
+            !executionPolicy.isSupportedAppVersion(
+                appVersion = currentAppVersion,
+                supportedAppVersion = profile.supportedAppVersion
+            )
+        ) {
+            val unsupportedDecision = MapUiDecision(
+                page = MapUiPage.UNKNOWN,
+                action = null,
+                evidence = "应用版本不受支持",
+                reason = "应用版本必须完整匹配"
+            )
+            val unsupportedEvidence = buildProfileEvidence(
+                provider = command.provider,
+                snapshot = snapshot,
+                profile = profile,
+                decision = unsupportedDecision
+            )
+            onStatusChanged("页面识别：$unsupportedEvidence")
+            finishCommand(
                 command = command,
-                startedAtMillis = startedAtMillis,
-                verificationAttempt = 1
+                result = createOperationResult(
+                    command = command,
+                    status = MapOperationStatus.UNSUPPORTED,
+                    startedAtMillis = startedAtMillis,
+                    failureCode =
+                        "${command.provider.name}_VERSION_UNSUPPORTED",
+                    failureMessage =
+                        "${command.provider.displayName()}地图版本不受支持",
+                    evidenceText = appendProbeEvidence(
+                        profileEvidence = unsupportedEvidence,
+                        packageName = packageName
+                    )
+                )
             )
             return
         }
+
+        val decision = profile.decide(snapshot)
+        val fingerprint = snapshot.fingerprint()
+        val nextRepeatedUnknownCount =
+            executionPolicy.repeatedUnknownCountFor(
+                page = decision.page,
+                fingerprint = fingerprint,
+                lastFingerprint = lastFingerprint,
+                repeatedUnknownCount = repeatedUnknownCount
+            )
+        val profileEvidence = buildProfileEvidence(
+            provider = command.provider,
+            snapshot = snapshot,
+            profile = profile,
+            decision = decision
+        )
+        onStatusChanged("页面识别：$profileEvidence")
+
+        val outcome = executionPolicy.outcomeFor(
+            page = decision.page,
+            actionCount = actionCount,
+            repeatedUnknownCount = nextRepeatedUnknownCount
+        )
+        if (outcome != MapUiExecutionOutcome.CONTINUE) {
+            finishProfileOutcome(
+                command = command,
+                startedAtMillis = startedAtMillis,
+                outcome = outcome,
+                decision = decision,
+                profileEvidence = profileEvidence
+            )
+            return
+        }
+
+        val action = decision.action
+        if (action == null || action == MapUiAction.WAIT) {
+            onStatusChanged("动作等待：$profileEvidence")
+            mainHandler.postDelayed(
+                {
+                    executeNextAction(
+                        command = command,
+                        startedAtMillis = startedAtMillis,
+                        actionCount = actionCount,
+                        lastFingerprint = fingerprint,
+                        repeatedUnknownCount =
+                            nextRepeatedUnknownCount,
+                        windowWaitAttempt = 0
+                    )
+                },
+                MAP_OPERATION_STEP_DELAY_MILLIS
+            )
+            return
+        }
+
+        val clickResult = command.provider.execute(
+            rootNode = rootNode,
+            action = action
+        )
+        onStatusChanged(
+            "动作执行：$profileEvidence；result=${clickResult.message}"
+        )
         if (!clickResult.success) {
             finishCommand(
                 command = command,
@@ -139,24 +235,32 @@ class DualMapCommandWorker(
                     status = MapOperationStatus.FAILED,
                     startedAtMillis = startedAtMillis,
                     failureCode =
-                        "${command.provider.name}_STEP_FAILED",
+                        "${command.provider.name}_ACTION_FAILED",
                     failureMessage = clickResult.message,
-                    evidenceText = clickResult.message
+                    evidenceText = appendProbeEvidence(
+                        profileEvidence =
+                            "$profileEvidence；result=${clickResult.message}",
+                        packageName = packageName
+                    )
                 )
             )
             return
         }
 
-        onStatusChanged(
-            "${command.provider.displayName()}地图步骤" +
-                    "${stepIndex + 1}已执行：${clickResult.message}"
-        )
+        val nextActionCount =
+            executionPolicy.actionCountAfterSuccessfulAction(
+                actionCount = actionCount,
+                action = action
+            )
         mainHandler.postDelayed(
             {
-                executeStep(
+                executeNextAction(
                     command = command,
-                    stepIndex = stepIndex + 1,
                     startedAtMillis = startedAtMillis,
+                    actionCount = nextActionCount,
+                    lastFingerprint = fingerprint,
+                    repeatedUnknownCount =
+                        nextRepeatedUnknownCount,
                     windowWaitAttempt = 0
                 )
             },
@@ -164,108 +268,138 @@ class DualMapCommandWorker(
         )
     }
 
-    // 在目标地图转入后台时保留当前命令与步骤并等待恢复。
-    private fun waitForTargetWindowBeforeStep(
+    // 在地图位于后台时保留完整页面循环状态并等待窗口恢复。
+    private fun waitForTargetWindowBeforeAction(
         command: MapCommand,
-        stepIndex: Int,
         startedAtMillis: Long,
+        actionCount: Int,
+        lastFingerprint: String,
+        repeatedUnknownCount: Int,
         windowWaitAttempt: Int
     ) {
         reportBackgroundWaitingIfNeeded(windowWaitAttempt)
         mainHandler.postDelayed(
             {
-                executeStep(
+                executeNextAction(
                     command = command,
-                    stepIndex = stepIndex,
                     startedAtMillis = startedAtMillis,
+                    actionCount = actionCount,
+                    lastFingerprint = lastFingerprint,
+                    repeatedUnknownCount = repeatedUnknownCount,
                     windowWaitAttempt = windowWaitAttempt + 1
                 )
             },
-            windowRecoveryPolicy.nextWaitDelayMillis(
-                windowWaitAttempt
+            windowRecoveryPolicy.nextWaitDelayMillis(windowWaitAttempt)
+        )
+    }
+
+    // 将 Profile 终态转换为持久化结果并结束命令。
+    private fun finishProfileOutcome(
+        command: MapCommand,
+        startedAtMillis: Long,
+        outcome: MapUiExecutionOutcome,
+        decision: MapUiDecision,
+        profileEvidence: String
+    ) {
+        val failureCode = when (outcome) {
+            MapUiExecutionOutcome.SUCCESS,
+            MapUiExecutionOutcome.ALREADY_COMPLETED -> ""
+            MapUiExecutionOutcome.BLOCKED ->
+                "${command.provider.name}_PROFILE_BLOCKED"
+            MapUiExecutionOutcome.UNSUPPORTED ->
+                "${command.provider.name}_PROFILE_UNSUPPORTED"
+            MapUiExecutionOutcome.TIMEOUT ->
+                "${command.provider.name}_ACTION_TIMEOUT"
+            MapUiExecutionOutcome.CONTINUE -> ""
+        }
+        finishCommand(
+            command = command,
+            result = createOperationResult(
+                command = command,
+                status = outcome.toOperationStatus(),
+                startedAtMillis = startedAtMillis,
+                failureCode = failureCode,
+                failureMessage = decision.reason
+                    .ifBlank { decision.evidence },
+                evidenceText = appendProbeEvidence(
+                    profileEvidence = profileEvidence,
+                    packageName = command.provider.packageName()
+                )
             )
         )
     }
 
-    // 延迟识别当前地图命令的终态证据。
-    private fun scheduleResultVerification(
-        command: MapCommand,
-        startedAtMillis: Long,
-        verificationAttempt: Int,
-        windowWaitAttempt: Int = 0
-    ) {
-        mainHandler.postDelayed(
-            {
-                if (activeCommand?.commandId != command.commandId) {
-                    return@postDelayed
-                }
-                if (!isTargetMapWindowAvailable(command.provider)) {
-                    reportBackgroundWaitingIfNeeded(windowWaitAttempt)
-                    scheduleResultVerification(
-                        command = command,
-                        startedAtMillis = startedAtMillis,
-                        verificationAttempt = verificationAttempt,
-                        windowWaitAttempt = windowWaitAttempt + 1
-                    )
-                    return@postDelayed
-                }
-                val probeResult = resultProbe.probe(
-                    command.provider.packageName()
-                )
-                if (probeResult.status.isTerminal) {
-                    finishCommand(
-                        command = command,
-                        result = createOperationResult(
-                            command = command,
-                            status = probeResult.status.operationStatus,
-                            startedAtMillis = startedAtMillis,
-                            failureCode = probeResult.failureCode,
-                            failureMessage =
-                                probeResult.status.displayText,
-                            evidenceText = probeResult.evidenceText
-                        )
-                    )
-                    return@postDelayed
-                }
-                if (
-                    verificationAttempt <
-                    MAP_RESULT_VERIFY_MAX_ATTEMPTS
-                ) {
-                    scheduleResultVerification(
-                        command = command,
-                        startedAtMillis = startedAtMillis,
-                        verificationAttempt =
-                            verificationAttempt + 1,
-                        windowWaitAttempt = 0
-                    )
-                    return@postDelayed
-                }
-
-                finishCommand(
-                    command = command,
-                    result = createOperationResult(
-                        command = command,
-                        status = MapOperationStatus.TIMEOUT,
-                        startedAtMillis = startedAtMillis,
-                        failureCode =
-                            "${command.provider.name}_RESULT_TIMEOUT",
-                        failureMessage =
-                            "${command.provider.displayName()}地图结果探测超时",
-                        evidenceText = probeResult.evidenceText
-                    )
-                )
-            },
-            MAP_RESULT_VERIFY_DELAY_MILLIS
-        )
+    // 返回地图服务商当前唯一受支持的页面 Profile。
+    private fun MapProvider.uiProfile(): ProviderUiProfile {
+        return when (this) {
+            MapProvider.BAIDU -> BaiduUiProfile
+            MapProvider.AMAP -> AmapUiProfile
+        }
     }
 
-    // 确认当前命令对应的地图窗口已恢复为可访问状态。
-    private fun isTargetMapWindowAvailable(
-        provider: MapProvider
-    ): Boolean {
-        return resultProbe.findWindowRootNode(
-            provider.packageName()
-        ) != null
+    // 通过地图服务商 Adapter 采集当前页面快照。
+    private fun MapProvider.captureSnapshot(
+        rootNode: AccessibilityNodeInfo?,
+        appVersion: String
+    ): MapUiSnapshot {
+        return when (this) {
+            MapProvider.BAIDU ->
+                BaiduMapAdapter.captureSnapshot(rootNode, appVersion)
+            MapProvider.AMAP ->
+                AmapMapAdapter.captureSnapshot(rootNode, appVersion)
+        }
+    }
+
+    // 通过地图服务商 Adapter 执行 Profile 返回的单个动作。
+    private fun MapProvider.execute(
+        rootNode: AccessibilityNodeInfo?,
+        action: MapUiAction
+    ) = when (this) {
+        MapProvider.BAIDU ->
+            BaiduMapAdapter.execute(rootNode, action)
+        MapProvider.AMAP ->
+            AmapMapAdapter.execute(rootNode, action)
+    }
+
+    // 读取当前安装地图应用的版本名并在读取失败时返回空字符串。
+    private fun appVersion(packageName: String): String {
+        return runCatching {
+            service.packageManager
+                .getPackageInfo(packageName, 0)
+                .versionName
+                .orEmpty()
+        }.getOrDefault("")
+    }
+
+    // 生成可持久化的 Profile 页面与动作证据。
+    private fun buildProfileEvidence(
+        provider: MapProvider,
+        snapshot: MapUiSnapshot,
+        profile: ProviderUiProfile,
+        decision: MapUiDecision
+    ): String {
+        return listOf(
+            "provider=${provider.name}",
+            "package=${snapshot.packageName}",
+            "appVersion=${snapshot.appVersion}",
+            "profileVersion=${profile.profileVersion}",
+            "page=${decision.page.name}",
+            "action=${decision.action?.name.orEmpty()}",
+            "evidence=${decision.evidence}"
+        ).joinToString(separator = "；")
+    }
+
+    // 追加旧 Probe 只读证据但不使用其状态覆盖 Profile 终态。
+    private fun appendProbeEvidence(
+        profileEvidence: String,
+        packageName: String
+    ): String {
+        val probeEvidence = resultProbe.probe(packageName).evidenceText
+        return if (probeEvidence.isBlank()) {
+            profileEvidence
+        } else {
+            "$profileEvidence；probeEvidence=$probeEvidence"
+        }
     }
 
     // 按节流策略提示后台等待状态且不改变系统窗口或当前命令。
@@ -281,7 +415,7 @@ class DualMapCommandWorker(
         }
         onStatusChanged(
             "双地图位于后台，已保留当前任务；" +
-                    "恢复双窗口后将从当前步骤继续执行"
+                    "恢复双窗口后将从当前页面继续执行"
         )
     }
 
@@ -356,7 +490,5 @@ class DualMapCommandWorker(
         const val COMMAND_POLL_INTERVAL_MILLIS = 500L
         const val MAP_OPERATION_INITIAL_DELAY_MILLIS = 4_000L
         const val MAP_OPERATION_STEP_DELAY_MILLIS = 1_500L
-        const val MAP_RESULT_VERIFY_DELAY_MILLIS = 2_000L
-        const val MAP_RESULT_VERIFY_MAX_ATTEMPTS = 5
     }
 }

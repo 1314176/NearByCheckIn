@@ -119,36 +119,6 @@ object AmapMapAdapter {
     }
 
     /**
-     * 点击高德地图“我的”入口。
-     *
-     * @param rootNode 高德地图窗口根节点。
-     * @return 点击结果。
-     */
-    fun clickMine(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return execute(rootNode, MapUiAction.CLICK_MINE)
-    }
-
-    /**
-     * 点击高德地图“足迹”入口。
-     *
-     * @param rootNode 高德地图窗口根节点。
-     * @return 点击结果。
-     */
-    fun clickFootprint(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return execute(rootNode, MapUiAction.CLICK_FOOTPRINT)
-    }
-
-    /**
-     * 点击高德地图“打卡”按钮。
-     *
-     * @param rootNode 高德地图窗口根节点。
-     * @return 点击结果。
-     */
-    fun clickCheckIn(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return execute(rootNode, MapUiAction.CLICK_CHECK_IN)
-    }
-
-    /**
      * 递归扫描节点树，统计可点击节点并保留候选摘要。
      *
      * @param node 当前节点。

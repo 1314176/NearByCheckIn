@@ -119,36 +119,6 @@ object BaiduMapAdapter {
     }
 
     /**
-     * 点击百度地图“我的”入口。
-     *
-     * @param rootNode 百度地图窗口根节点。
-     * @return 点击结果。
-     */
-    fun clickMine(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return execute(rootNode, MapUiAction.CLICK_MINE)
-    }
-
-    /**
-     * 点击百度地图“打卡点”入口。
-     *
-     * @param rootNode 百度地图窗口根节点。
-     * @return 点击结果。
-     */
-    fun clickCheckInPoint(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return execute(rootNode, MapUiAction.CLICK_CHECK_IN_POINT)
-    }
-
-    /**
-     * 点击百度地图“立即打卡”按钮。
-     *
-     * @param rootNode 百度地图窗口根节点。
-     * @return 点击结果。
-     */
-    fun clickImmediateCheckIn(rootNode: AccessibilityNodeInfo?): AccessibilityClickResult {
-        return execute(rootNode, MapUiAction.CLICK_CHECK_IN)
-    }
-
-    /**
      * 递归扫描节点树，统计可点击节点并保留候选摘要。
      *
      * @param node 当前节点。

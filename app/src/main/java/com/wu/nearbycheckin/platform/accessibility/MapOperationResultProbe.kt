@@ -69,6 +69,25 @@ enum class MapOperationProbeStatus(
     )
 }
 
+// 按精确兼容标记解析旧地图页面结果文本。
+internal fun resolveMapOperationProbeStatus(
+    text: String
+): MapOperationProbeStatus {
+    return when {
+        ALREADY_COMPLETED_TEXT_MARKERS.any(text::contains) ->
+            MapOperationProbeStatus.ALREADY_COMPLETED
+        SUCCESS_TEXT_MARKERS.any(text::contains) ->
+            MapOperationProbeStatus.SUCCESS
+        BLOCKED_TEXT_MARKERS.any(text::contains) ->
+            MapOperationProbeStatus.BLOCKED
+        UNSUPPORTED_TEXT_MARKERS.any(text::contains) ->
+            MapOperationProbeStatus.UNSUPPORTED
+        FAILURE_TEXT_MARKERS.any(text::contains) ->
+            MapOperationProbeStatus.FAILED
+        else -> MapOperationProbeStatus.UNKNOWN
+    }
+}
+
 /**
  * 隔离无障碍节点查找、证据采集和结果关键词解析。
  */
@@ -110,7 +129,7 @@ class MapOperationResultProbe(
             result = visibleTexts
         )
         return MapOperationProbeResult(
-            status = resolveProbeStatus(
+            status = resolveMapOperationProbeStatus(
                 visibleTexts.joinToString(separator = " ")
             ),
             evidenceText = visibleTexts
@@ -177,64 +196,45 @@ class MapOperationResultProbe(
         }
     }
 
-    // 按稳定优先级解析地图端页面结果。
-    private fun resolveProbeStatus(text: String): MapOperationProbeStatus {
-        return when {
-            ALREADY_COMPLETED_TEXT_MARKERS.any(text::contains) ->
-                MapOperationProbeStatus.ALREADY_COMPLETED
-            SUCCESS_TEXT_MARKERS.any(text::contains) ->
-                MapOperationProbeStatus.SUCCESS
-            BLOCKED_TEXT_MARKERS.any(text::contains) ->
-                MapOperationProbeStatus.BLOCKED
-            UNSUPPORTED_TEXT_MARKERS.any(text::contains) ->
-                MapOperationProbeStatus.UNSUPPORTED
-            FAILURE_TEXT_MARKERS.any(text::contains) ->
-                MapOperationProbeStatus.FAILED
-            else -> MapOperationProbeStatus.UNKNOWN
-        }
-    }
-
     private companion object {
         const val PACKAGE_SCAN_DEPTH = 4
         const val TEXT_SCAN_DEPTH = 12
         const val TEXT_MAX_COUNT = 120
         const val EVIDENCE_TEXT_COUNT = 8
-
-        val SUCCESS_TEXT_MARKERS = listOf(
-            "打卡成功",
-            "签到成功",
-            "成功"
-        )
-        val ALREADY_COMPLETED_TEXT_MARKERS = listOf(
-            "已打卡",
-            "今日已打卡",
-            "已经打卡",
-            "已签到"
-        )
-        val FAILURE_TEXT_MARKERS = listOf(
-            "打卡失败",
-            "签到失败",
-            "失败",
-            "未成功",
-            "网络异常",
-            "稍后再试",
-            "无法打卡"
-        )
-        val BLOCKED_TEXT_MARKERS = listOf(
-            "登录",
-            "验证码",
-            "安全验证",
-            "权限",
-            "授权",
-            "账号",
-            "风险"
-        )
-        val UNSUPPORTED_TEXT_MARKERS = listOf(
-            "不支持",
-            "暂未开放",
-            "功能不可用",
-            "版本过低",
-            "无法识别"
-        )
     }
 }
+
+private val SUCCESS_TEXT_MARKERS = listOf(
+    "打卡成功",
+    "签到成功"
+)
+private val ALREADY_COMPLETED_TEXT_MARKERS = listOf(
+    "今日已打卡",
+    "当前地点已打卡",
+    "今天已签到"
+)
+private val FAILURE_TEXT_MARKERS = listOf(
+    "打卡失败",
+    "签到失败",
+    "失败",
+    "未成功",
+    "网络异常",
+    "稍后再试",
+    "无法打卡"
+)
+private val BLOCKED_TEXT_MARKERS = listOf(
+    "登录",
+    "验证码",
+    "安全验证",
+    "权限",
+    "授权",
+    "账号",
+    "风险"
+)
+private val UNSUPPORTED_TEXT_MARKERS = listOf(
+    "不支持",
+    "暂未开放",
+    "功能不可用",
+    "版本过低",
+    "无法识别"
+)
