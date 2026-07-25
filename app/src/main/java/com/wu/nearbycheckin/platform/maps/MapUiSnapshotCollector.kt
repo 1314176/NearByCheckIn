@@ -51,25 +51,20 @@ object MapUiSnapshotCollector {
 
     // 按实际执行规则判断当前节点或祖先是否可点击。
     private fun AccessibilityNodeInfo.hasClickableAncestor(): Boolean {
-        var currentNode: AccessibilityNodeInfo? = this
-
-        while (currentNode != null) {
-            if (
-                currentNode.isEnabled &&
-                (
-                        currentNode.isClickable ||
-                                currentNode.actionList.any { action ->
-                                    action.id == AccessibilityNodeInfo.ACTION_CLICK
-                                }
-                        )
-            ) {
-                return true
+        return BoundedAncestorFinder.findFirst(
+            startNode = this,
+            parentOf = { node -> node.parent },
+            matches = { node ->
+                node.isEnabled &&
+                        (
+                                node.isClickable ||
+                                        node.actionList.any { action ->
+                                            action.id ==
+                                                    AccessibilityNodeInfo.ACTION_CLICK
+                                        }
+                                )
             }
-
-            currentNode = currentNode.parent
-        }
-
-        return false
+        ) != null
     }
 
     private const val MAX_DEPTH = 12

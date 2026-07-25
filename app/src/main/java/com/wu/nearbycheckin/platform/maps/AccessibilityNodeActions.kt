@@ -142,25 +142,20 @@ object AccessibilityNodeActions {
     private fun findClickableNode(
         node: AccessibilityNodeInfo
     ): AccessibilityNodeInfo? {
-        var currentNode: AccessibilityNodeInfo? = node
-
-        while (currentNode != null) {
-            if (
+        return BoundedAncestorFinder.findFirst(
+            startNode = node,
+            parentOf = { currentNode -> currentNode.parent },
+            matches = { currentNode ->
                 currentNode.isEnabled &&
-                (
-                        currentNode.isClickable ||
-                                currentNode.actionList.any { action ->
-                                    action.id == AccessibilityNodeInfo.ACTION_CLICK
-                                }
-                        )
-            ) {
-                return currentNode
+                        (
+                                currentNode.isClickable ||
+                                        currentNode.actionList.any { action ->
+                                            action.id ==
+                                                    AccessibilityNodeInfo.ACTION_CLICK
+                                        }
+                                )
             }
-
-            currentNode = currentNode.parent
-        }
-
-        return null
+        )
     }
 
     private const val MAX_SEARCH_DEPTH = 12
