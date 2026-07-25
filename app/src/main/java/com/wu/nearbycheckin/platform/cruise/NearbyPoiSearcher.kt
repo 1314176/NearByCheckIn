@@ -1,10 +1,11 @@
-// @Time: 2026/06/29 06:10
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: NearbyPoiSearcher.kt
 // @Software: Android Studio
 
 
 @file:Suppress("SpellCheckingInspection")
+
 
 package com.wu.nearbycheckin.platform.cruise
 
@@ -23,6 +24,7 @@ import com.baidu.mapapi.search.poi.PoiResult
 import com.baidu.mapapi.search.poi.PoiSearch
 import com.baidu.mapapi.utils.CoordinateConverter
 import com.baidu.mapapi.utils.DistanceUtil
+
 
 /**
  * 保存一次百度地图周边POI检索返回的地点信息。

@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 14:00
+// @Time: 2026/07/20 18:29
 // @Author: MrWu
 // @File: MainViewModel.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.presentation.main
+
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -15,20 +17,21 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 
-import com.wu.nearbycheckin.application.gateway.CruisePrecheck
-import com.wu.nearbycheckin.application.usecase.ClearRecordsUseCase
-import com.wu.nearbycheckin.application.usecase.ClearScope
-import com.wu.nearbycheckin.application.usecase.QueryRecordsUseCase
-import com.wu.nearbycheckin.application.usecase.RecordQueryScope
-import com.wu.nearbycheckin.application.usecase.StartCruiseResult
-import com.wu.nearbycheckin.application.usecase.StartCruiseUseCase
-import com.wu.nearbycheckin.application.usecase.StopCruiseUseCase
-import com.wu.nearbycheckin.domain.coordinator.CheckInCoordinator
-import com.wu.nearbycheckin.domain.model.AutomationLogLevel
-import com.wu.nearbycheckin.domain.model.AutomationSessionStatus
-import com.wu.nearbycheckin.domain.model.AutomationSnapshot
-import com.wu.nearbycheckin.domain.model.MapOperationStatus
-import com.wu.nearbycheckin.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.core.domain.gateway.CruisePrecheck
+import com.wu.nearbycheckin.core.domain.usecase.ClearRecordsUseCase
+import com.wu.nearbycheckin.core.domain.usecase.ClearScope
+import com.wu.nearbycheckin.core.domain.usecase.QueryRecordsUseCase
+import com.wu.nearbycheckin.core.domain.usecase.RecordQueryScope
+import com.wu.nearbycheckin.core.domain.usecase.StartCruiseResult
+import com.wu.nearbycheckin.core.domain.usecase.StartCruiseUseCase
+import com.wu.nearbycheckin.core.domain.usecase.StopCruiseUseCase
+import com.wu.nearbycheckin.core.domain.coordinator.CheckInCoordinator
+import com.wu.nearbycheckin.core.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.model.AutomationSessionStatus
+import com.wu.nearbycheckin.core.model.AutomationSnapshot
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
+
 
 /**
  * 将 Repository Flow 和 UI 事件映射为唯一 MainUiState。

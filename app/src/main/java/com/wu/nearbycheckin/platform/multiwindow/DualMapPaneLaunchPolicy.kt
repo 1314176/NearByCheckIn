@@ -1,11 +1,14 @@
-// @Time: 2026/07/26 01:29
+// @Time: 2026/07/26 01:30
 // @Author: MrWu
 // @File: DualMapPaneLaunchPolicy.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.multiwindow
 
+
 import android.content.Intent
+
 
 /**
  * 统一生成双地图当前窗格替换所需的 Activity 启动标记。

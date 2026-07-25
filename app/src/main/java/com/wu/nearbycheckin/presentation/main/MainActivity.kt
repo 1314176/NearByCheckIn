@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 14:20
+// @Time: 2026/07/20 18:31
 // @Author: MrWu
 // @File: MainActivity.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.presentation.main
+
 
 import android.Manifest
 import android.content.ActivityNotFoundException
@@ -42,6 +44,7 @@ import com.wu.nearbycheckin.platform.multiwindow.DualMapPaneLaunchPolicy
 import com.wu.nearbycheckin.presentation.components.CyberpunkKVBackground
 import com.wu.nearbycheckin.presentation.components.GlowRadarOverlay
 import com.wu.nearbycheckin.ui.theme.NearbyCheckInTheme
+
 
 /**
  * 作为 Compose 宿主并处理 ViewModel 发出的系统导航 Effect。

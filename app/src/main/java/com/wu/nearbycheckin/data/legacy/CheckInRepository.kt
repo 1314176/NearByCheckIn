@@ -1,10 +1,11 @@
-// @Time: 2026/06/29 07:20
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: CheckInRepository.kt
 // @Software: Android Studio
 
 
 @file:Suppress("SpellCheckingInspection")
+
 
 package com.wu.nearbycheckin.data.legacy
 
@@ -16,16 +17,17 @@ import android.util.Log
 
 import androidx.core.content.edit
 
-import com.wu.nearbycheckin.domain.model.CheckInRecord
-import com.wu.nearbycheckin.domain.model.DualMapCheckInRecord
-import com.wu.nearbycheckin.domain.model.MapOperationResult
-import com.wu.nearbycheckin.domain.model.MapOperationStatus
-import com.wu.nearbycheckin.domain.model.MapProvider
-import com.wu.nearbycheckin.platform.cruise.NearbyPoi
-
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+
+import com.wu.nearbycheckin.core.model.CheckInRecord
+import com.wu.nearbycheckin.core.model.DualMapCheckInRecord
+import com.wu.nearbycheckin.core.model.MapOperationResult
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.platform.cruise.NearbyPoi
+
 
 /**
  * 负责将自动打卡记录保存到手机本地，并提供记录查询和重复判断能力。
@@ -606,5 +608,4 @@ class CheckInRepository(
         const val EVIDENCE_TEXT_KEY = "evidenceText"
     }
 }
-
 

@@ -1,4 +1,4 @@
-// @Time: 2026/07/02 02:07
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: AccessibilityDiagnosticsRepository.kt
 // @Software: Android Studio
@@ -12,6 +12,7 @@ package com.wu.nearbycheckin.data.legacy
 
 import android.content.Context
 import androidx.core.content.edit
+
 
 /**
  * 保存一次双地图无障碍窗口诊断的摘要状态。

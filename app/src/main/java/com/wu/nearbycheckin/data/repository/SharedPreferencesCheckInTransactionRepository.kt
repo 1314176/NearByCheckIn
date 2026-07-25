@@ -1,23 +1,26 @@
-// @Time: 2026/07/20 12:20
+// @Time: 2026/07/20 18:05
 // @Author: MrWu
 // @File: SharedPreferencesCheckInTransactionRepository.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.data.repository
+
 
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
-import com.wu.nearbycheckin.domain.model.AutomationLogEntry
-import com.wu.nearbycheckin.domain.model.AutomationLogLevel
-import com.wu.nearbycheckin.domain.model.AutomationSnapshot
-import com.wu.nearbycheckin.domain.model.DualMapTransactionStatus
-import com.wu.nearbycheckin.domain.model.MapCommand
-import com.wu.nearbycheckin.domain.model.MapCommandStatus
-import com.wu.nearbycheckin.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AutomationLogEntry
+import com.wu.nearbycheckin.core.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.model.AutomationSnapshot
+import com.wu.nearbycheckin.core.model.DualMapTransactionStatus
+import com.wu.nearbycheckin.core.model.MapCommand
+import com.wu.nearbycheckin.core.model.MapCommandStatus
+import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
+
 
 /**
  * 使用 SharedPreferences 原子持久化完整自动化快照。

@@ -1,10 +1,18 @@
+// @Time: 2026/07/26 01:29
+// @Author: MrWu
+// @File: DualMapPaneLaunchPolicyTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.multiwindow
+
 
 import android.content.Intent
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
 
 class DualMapPaneLaunchPolicyTest {
 

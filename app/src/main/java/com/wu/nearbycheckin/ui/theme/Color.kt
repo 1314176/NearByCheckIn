@@ -1,6 +1,14 @@
+// @Time: 2026/06/25 04:16
+// @Author: MrWu
+// @File: Color.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.ui.theme
 
+
 import androidx.compose.ui.graphics.Color
+
 
 val Purple80 = Color(0xFFD0BCFF)
 val PurpleGrey80 = Color(0xFFCCC2DC)

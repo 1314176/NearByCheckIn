@@ -1,4 +1,4 @@
-// @Time: 2026/07/02 01:54
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: AccessibilityWindowInspector.kt
 // @Software: Android Studio
@@ -15,7 +15,8 @@ import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+
 
 /**
  * 只读检查无障碍窗口和节点，用于采集百度地图与高德地图分屏诊断信息。

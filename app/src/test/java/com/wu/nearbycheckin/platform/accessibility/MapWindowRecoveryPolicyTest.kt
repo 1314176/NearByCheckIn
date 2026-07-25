@@ -1,14 +1,17 @@
-// @Time: 2026/07/26 00:10
+// @Time: 2026/07/26 00:00
 // @Author: MrWu
 // @File: MapWindowRecoveryPolicyTest.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.accessibility
+
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
 
 /**
  * 验证后台地图窗口恢复请求的节流与等待退避。

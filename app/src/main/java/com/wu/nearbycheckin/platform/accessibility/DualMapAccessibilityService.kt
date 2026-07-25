@@ -1,9 +1,11 @@
-// @Time: 2026/07/20 16:00
+// @Time: 2026/07/20 18:42
 // @Author: MrWu
 // @File: DualMapAccessibilityService.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.accessibility
+
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Handler
@@ -13,9 +15,10 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 
 import com.wu.nearbycheckin.app.NearbyCheckInApplication
-import com.wu.nearbycheckin.domain.model.AccessibilityDiagnostics
-import com.wu.nearbycheckin.domain.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
+import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.platform.maps.AccessibilityWindowInspector
+
 
 /**
  * 只负责无障碍生命周期、事件诊断和平台组件装配。

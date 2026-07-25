@@ -1,4 +1,4 @@
-// @Time: 2026/07/02 02:58
+// @Time: 2026/07/20 18:32
 // @Author: MrWu
 // @File: AmapMapAdapter.kt
 // @Software: Android Studio
@@ -12,6 +12,7 @@ package com.wu.nearbycheckin.platform.maps
 
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
+
 
 /**
  * 保存高德地图可访问节点的只读摘要。

@@ -1,14 +1,17 @@
-// @Time: 2026/07/20 15:40
+// @Time: 2026/07/20 18:39
 // @Author: MrWu
 // @File: MapOperationResultProbe.kt
-// @Software: Codex
+// @Software: Android Studio
+
 
 package com.wu.nearbycheckin.platform.accessibility
+
 
 import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityNodeInfo
 
-import com.wu.nearbycheckin.domain.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+
 
 /**
  * 保存一次地图页面结果文本探测。
