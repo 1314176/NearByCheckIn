@@ -28,7 +28,8 @@ object AccessibilityNodeActions {
     fun clickFirstMatchingLabel(
         rootNode: AccessibilityNodeInfo?,
         labels: List<String>,
-        gestureTap: ((Int, Int) -> Boolean)? = null
+        gestureTap: ((Int, Int) -> Boolean)? = null,
+        preferGesture: Boolean = false
     ): AccessibilityClickResult {
         if (rootNode == null) {
             return AccessibilityClickResult(
@@ -51,37 +52,60 @@ object AccessibilityNodeActions {
             )
         }
 
+        val gestureClick = gestureTap?.let { tap ->
+            {
+                executeGestureTap(
+                    rootNode = rootNode,
+                    matchingNodes = matchingNodes,
+                    gestureTap = tap
+                )
+            }
+        }
+        return MapUiClickPreferenceExecutor.execute(
+            preferGesture = preferGesture,
+            nodeClick = {
+                clickMatchingNode(
+                    matchingNodes = matchingNodes,
+                    labels = labels
+                )
+            },
+            gestureClick = gestureClick
+        )
+    }
+
+    // 点击首个可执行匹配节点并返回确定结果。
+    private fun clickMatchingNode(
+        matchingNodes: List<AccessibilityNodeInfo>,
+        labels: List<String>
+    ): AccessibilityClickResult {
         val clickableNode = matchingNodes.firstNotNullOfOrNull { node ->
             findClickableNode(node)
-        }
-        if (clickableNode != null) {
-            val clicked = clickableNode.performAction(
-                AccessibilityNodeInfo.ACTION_CLICK
-            )
-            if (clicked) {
-                return AccessibilityClickResult(
-                    success = true,
-                    message =
-                        "已点击节点：" +
-                                labels.joinToString(separator = "/")
-                )
+        } ?: return AccessibilityClickResult(
+            success = false,
+            message =
+                "节点不可点击：${labels.joinToString(separator = "/")}"
+        )
+        val clicked = clickableNode.performAction(
+            AccessibilityNodeInfo.ACTION_CLICK
+        )
+        return AccessibilityClickResult(
+            success = clicked,
+            message = if (clicked) {
+                "已点击节点：" +
+                        labels.joinToString(separator = "/")
+            } else {
+                "节点点击失败：" +
+                        labels.joinToString(separator = "/")
             }
-            if (gestureTap == null) {
-                return AccessibilityClickResult(
-                    success = false,
-                    message =
-                        "节点点击失败：" +
-                                labels.joinToString(separator = "/")
-                )
-            }
-        }
-        if (gestureTap == null) {
-            return AccessibilityClickResult(
-                success = false,
-                message =
-                    "节点不可点击：${labels.joinToString(separator = "/")}"
-            )
-        }
+        )
+    }
+
+    // 从唯一安全语义节点生成边界中心并提交一次手势。
+    private fun executeGestureTap(
+        rootNode: AccessibilityNodeInfo,
+        matchingNodes: List<AccessibilityNodeInfo>,
+        gestureTap: (Int, Int) -> Boolean
+    ): AccessibilityClickResult {
         val selection = MapUiGestureTargetPolicy.select(
             candidates = matchingNodes.map { node ->
                 MapUiGestureCandidate(

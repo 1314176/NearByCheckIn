@@ -115,7 +115,10 @@ class DualMapCommandWorker(
         actionCount: Int = 0,
         lastFingerprint: String = "",
         repeatedUnknownCount: Int = 0,
-        windowWaitAttempt: Int = 0
+        windowWaitAttempt: Int = 0,
+        amapCheckInStage: AmapCheckInStage =
+            AmapCheckInStage.NONE,
+        baiduCheckInSubmitted: Boolean = false
     ) {
         if (activeCommand?.commandId != command.commandId) {
             return
@@ -131,7 +134,9 @@ class DualMapCommandWorker(
                 actionCount = actionCount,
                 lastFingerprint = lastFingerprint,
                 repeatedUnknownCount = repeatedUnknownCount,
-                windowWaitAttempt = windowWaitAttempt
+                windowWaitAttempt = windowWaitAttempt,
+                amapCheckInStage = amapCheckInStage,
+                baiduCheckInSubmitted = baiduCheckInSubmitted
             )
             return
         }
@@ -186,9 +191,20 @@ class DualMapCommandWorker(
 
         val decision = profile.decide(snapshot)
         val fingerprint = snapshot.fingerprint()
+        val loopGuardPage = if (
+            command.provider == MapProvider.AMAP
+        ) {
+            AmapCheckInFollowUpPolicy.loopGuardPage(
+                page = decision.page,
+                action = decision.action,
+                stage = amapCheckInStage
+            )
+        } else {
+            decision.page
+        }
         val nextRepeatedUnknownCount =
             executionPolicy.repeatedUnknownCountFor(
-                page = decision.page,
+                page = loopGuardPage,
                 fingerprint = fingerprint,
                 lastFingerprint = lastFingerprint,
                 repeatedUnknownCount = repeatedUnknownCount
@@ -211,6 +227,53 @@ class DualMapCommandWorker(
             structuredEvidence = profileEvidence
         )
 
+        if (
+            command.provider == MapProvider.AMAP &&
+            AmapCheckInFollowUpPolicy.isSuccessfulRateLimit(
+                page = decision.page,
+                stage = amapCheckInStage
+            )
+        ) {
+            finishProfileOutcome(
+                command = command,
+                startedAtMillis = startedAtMillis,
+                outcome = MapUiExecutionOutcome.SUCCESS,
+                decision = decision.copy(
+                    evidence =
+                        "第二次点击触发频率限制，第一次打卡已生效"
+                ),
+                profileEvidence = appendBoundedWorkerEvidence(
+                    structuredEvidence = profileEvidence,
+                    key = "followUp",
+                    value = "second_click_rate_limited_success"
+                )
+            )
+            return
+        }
+
+        if (
+            MapUiSuccessCleanupPolicy.shouldExecute(
+                provider = command.provider,
+                page = decision.page,
+                action = decision.action
+            )
+        ) {
+            executeSuccessPageCleanup(
+                command = command,
+                startedAtMillis = startedAtMillis,
+                rootNode = rootNode,
+                currentAppVersion = currentAppVersion,
+                decision = decision,
+                profileEvidence = profileEvidence,
+                fingerprint = fingerprint,
+                actionCount = actionCount,
+                amapCheckInStage = amapCheckInStage,
+                baiduCheckInSubmitted =
+                    baiduCheckInSubmitted
+            )
+            return
+        }
+
         val outcome = executionPolicy.outcomeFor(
             page = decision.page,
             actionCount = actionCount,
@@ -228,7 +291,16 @@ class DualMapCommandWorker(
         }
 
         val action = decision.action
-        if (action == null || action == MapUiAction.WAIT) {
+        val amapCheckInAlreadySubmittedTwice =
+            command.provider == MapProvider.AMAP &&
+                    action == MapUiAction.CLICK_CHECK_IN &&
+                    !AmapCheckInFollowUpPolicy
+                        .shouldExecuteCheckIn(amapCheckInStage)
+        if (
+            action == null ||
+            action == MapUiAction.WAIT ||
+            amapCheckInAlreadySubmittedTwice
+        ) {
             reportStructuredStatus(
                 event = "动作等待",
                 structuredEvidence = profileEvidence
@@ -242,7 +314,10 @@ class DualMapCommandWorker(
                         lastFingerprint = fingerprint,
                         repeatedUnknownCount =
                             nextRepeatedUnknownCount,
-                        windowWaitAttempt = 0
+                        windowWaitAttempt = 0,
+                        amapCheckInStage = amapCheckInStage,
+                        baiduCheckInSubmitted =
+                            baiduCheckInSubmitted
                     )
                 },
                 MAP_OPERATION_STEP_DELAY_MILLIS
@@ -288,6 +363,29 @@ class DualMapCommandWorker(
                 actionCount = actionCount,
                 action = action
             )
+        val nextAmapCheckInStage = if (
+            command.provider == MapProvider.AMAP &&
+            action == MapUiAction.CLICK_CHECK_IN
+        ) {
+            AmapCheckInFollowUpPolicy
+                .nextStageAfterSuccessfulCheckIn(
+                    amapCheckInStage
+                )
+        } else {
+            amapCheckInStage
+        }
+        val nextBaiduCheckInSubmitted =
+            baiduCheckInSubmitted || (
+                    command.provider == MapProvider.BAIDU &&
+                            action == MapUiAction.CLICK_CHECK_IN
+                    )
+        val nextDelayMillis =
+            AmapCheckInFollowUpPolicy
+                .delayBeforeNextLoopMillis(
+                    stage = nextAmapCheckInStage,
+                    defaultDelayMillis =
+                        MAP_OPERATION_STEP_DELAY_MILLIS
+                )
         mainHandler.postDelayed(
             {
                 executeNextAction(
@@ -297,10 +395,13 @@ class DualMapCommandWorker(
                     lastFingerprint = fingerprint,
                     repeatedUnknownCount =
                         nextRepeatedUnknownCount,
-                    windowWaitAttempt = 0
+                    windowWaitAttempt = 0,
+                    amapCheckInStage = nextAmapCheckInStage,
+                    baiduCheckInSubmitted =
+                        nextBaiduCheckInSubmitted
                 )
             },
-            MAP_OPERATION_STEP_DELAY_MILLIS
+            nextDelayMillis
         )
     }
 
@@ -311,7 +412,9 @@ class DualMapCommandWorker(
         actionCount: Int,
         lastFingerprint: String,
         repeatedUnknownCount: Int,
-        windowWaitAttempt: Int
+        windowWaitAttempt: Int,
+        amapCheckInStage: AmapCheckInStage,
+        baiduCheckInSubmitted: Boolean
     ) {
         reportBackgroundWaitingIfNeeded(
             command = command,
@@ -325,11 +428,98 @@ class DualMapCommandWorker(
                     actionCount = actionCount,
                     lastFingerprint = lastFingerprint,
                     repeatedUnknownCount = repeatedUnknownCount,
-                    windowWaitAttempt = windowWaitAttempt + 1
+                    windowWaitAttempt = windowWaitAttempt + 1,
+                    amapCheckInStage = amapCheckInStage,
+                    baiduCheckInSubmitted =
+                        baiduCheckInSubmitted
                 )
             },
             windowRecoveryPolicy.nextWaitDelayMillis(windowWaitAttempt)
         )
+    }
+
+    // 清理百度成功页并按当前命令是否已提交打卡决定后续去向。
+    private fun executeSuccessPageCleanup(
+        command: MapCommand,
+        startedAtMillis: Long,
+        rootNode: AccessibilityNodeInfo,
+        currentAppVersion: String,
+        decision: MapUiDecision,
+        profileEvidence: String,
+        fingerprint: String,
+        actionCount: Int,
+        amapCheckInStage: AmapCheckInStage,
+        baiduCheckInSubmitted: Boolean
+    ) {
+        val action = requireNotNull(decision.action)
+        val cleanupResult = command.provider.execute(
+            rootNode = rootNode,
+            action = action,
+            appVersion = currentAppVersion
+        )
+        val cleanupEvidence =
+            MapUiSuccessCleanupPolicy.appendEvidence(
+                profileEvidence = profileEvidence,
+                clickResult = cleanupResult
+            )
+        reportStructuredStatus(
+            event = "成功页清理",
+            structuredEvidence = cleanupEvidence
+        )
+        when (
+            MapUiSuccessCleanupPolicy.dispositionAfter(
+                checkInSubmitted = baiduCheckInSubmitted,
+                clickResult = cleanupResult
+            )
+        ) {
+            MapUiSuccessCleanupDisposition.FINISH_SUCCESS ->
+                finishProfileOutcome(
+                    command = command,
+                    startedAtMillis = startedAtMillis,
+                    outcome = MapUiExecutionOutcome.SUCCESS,
+                    decision = decision,
+                    profileEvidence = cleanupEvidence
+                )
+            MapUiSuccessCleanupDisposition.CONTINUE_COMMAND -> {
+                val nextActionCount =
+                    executionPolicy.actionCountAfterSuccessfulAction(
+                        actionCount = actionCount,
+                        action = action
+                    )
+                mainHandler.postDelayed(
+                    {
+                        executeNextAction(
+                            command = command,
+                            startedAtMillis = startedAtMillis,
+                            actionCount = nextActionCount,
+                            lastFingerprint = fingerprint,
+                            repeatedUnknownCount = 0,
+                            windowWaitAttempt = 0,
+                            amapCheckInStage = amapCheckInStage,
+                            baiduCheckInSubmitted = false
+                        )
+                    },
+                    MAP_OPERATION_STEP_DELAY_MILLIS
+                )
+            }
+            MapUiSuccessCleanupDisposition.FAIL_COMMAND ->
+                finishCommand(
+                    command = command,
+                    result = createOperationResult(
+                        command = command,
+                        status = MapOperationStatus.FAILED,
+                        startedAtMillis = startedAtMillis,
+                        failureCode =
+                            "BAIDU_STALE_SUCCESS_CLEANUP_FAILED",
+                        failureMessage = cleanupResult.message,
+                        evidenceText = appendProbeEvidence(
+                            profileEvidence = cleanupEvidence,
+                            packageName =
+                                command.provider.packageName()
+                        )
+                    )
+                )
+        }
     }
 
     // 将 Profile 终态转换为持久化结果并结束命令。
@@ -403,7 +593,12 @@ class DualMapCommandWorker(
                 gestureTap = gestureTapDispatcher::tap
             )
         MapProvider.AMAP ->
-            AmapMapAdapter.execute(rootNode, action)
+            AmapMapAdapter.execute(
+                rootNode = rootNode,
+                action = action,
+                appVersion = appVersion,
+                gestureTap = gestureTapDispatcher::tap
+            )
     }
 
     // 读取当前安装地图应用的版本名并在读取失败时返回空字符串。

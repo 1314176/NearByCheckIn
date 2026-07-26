@@ -1,5 +1,6 @@
 package com.wu.nearbycheckin.platform.accessibility
 
+import com.wu.nearbycheckin.platform.maps.MapUiAction
 import com.wu.nearbycheckin.platform.maps.MapUiPage
 
 enum class AmapCheckInStage {
@@ -44,6 +45,30 @@ object AmapCheckInFollowUpPolicy {
     ): Boolean {
         return page == MapUiPage.RATE_LIMITED &&
                 stage == AmapCheckInStage.SECOND_CLICK_SUBMITTED
+    }
+
+    // 判断当前阶段是否仍允许提交“开始打卡”动作。
+    fun shouldExecuteCheckIn(
+        stage: AmapCheckInStage
+    ): Boolean {
+        return stage != AmapCheckInStage.SECOND_CLICK_SUBMITTED
+    }
+
+    // 把第二次点击后未变化的打卡页纳入重复未知页保护。
+    fun loopGuardPage(
+        page: MapUiPage,
+        action: MapUiAction?,
+        stage: AmapCheckInStage
+    ): MapUiPage {
+        return if (
+            stage == AmapCheckInStage.SECOND_CLICK_SUBMITTED &&
+            page == MapUiPage.CHECK_IN &&
+            action == MapUiAction.CLICK_CHECK_IN
+        ) {
+            MapUiPage.UNKNOWN
+        } else {
+            page
+        }
     }
 
     const val SECOND_CLICK_DELAY_MILLIS = 2_000L

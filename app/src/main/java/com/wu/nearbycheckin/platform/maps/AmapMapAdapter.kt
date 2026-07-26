@@ -114,14 +114,24 @@ object AmapMapAdapter {
     // 执行高德 Profile 返回的单个动作。
     fun execute(
         rootNode: AccessibilityNodeInfo?,
-        action: MapUiAction
+        action: MapUiAction,
+        appVersion: String,
+        gestureTap: (Int, Int) -> Boolean
     ): AccessibilityClickResult {
+        val gestureEnabled =
+            appVersion == AmapUiProfile.supportedAppVersion
         return AccessibilityNodeActions.clickFirstMatchingLabel(
             rootNode = rootNode,
             labels = MapUiActionLabels.forProvider(
                 MapProvider.AMAP,
                 action
-            )
+            ),
+            gestureTap = if (gestureEnabled) {
+                gestureTap
+            } else {
+                null
+            },
+            preferGesture = gestureEnabled
         )
     }
 

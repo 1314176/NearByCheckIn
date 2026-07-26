@@ -1,5 +1,6 @@
 package com.wu.nearbycheckin.platform.accessibility
 
+import com.wu.nearbycheckin.platform.maps.MapUiAction
 import com.wu.nearbycheckin.platform.maps.MapUiPage
 
 import org.junit.Assert.assertEquals
@@ -74,6 +75,42 @@ class AmapCheckInFollowUpPolicyTest {
             AmapCheckInFollowUpPolicy.isSuccessfulRateLimit(
                 page = MapUiPage.RATE_LIMITED,
                 stage = AmapCheckInStage.SECOND_CLICK_SUBMITTED
+            )
+        )
+    }
+
+    // 验证第二次点击已提交后不再执行第三次打卡动作。
+    @Test
+    fun stopsCheckInActionsAfterSecondSubmission() {
+        assertTrue(
+            AmapCheckInFollowUpPolicy.shouldExecuteCheckIn(
+                AmapCheckInStage.WAITING_SECOND_CLICK
+            )
+        )
+        assertFalse(
+            AmapCheckInFollowUpPolicy.shouldExecuteCheckIn(
+                AmapCheckInStage.SECOND_CLICK_SUBMITTED
+            )
+        )
+    }
+
+    // 验证第二次点击后的未变化页面进入重复未知页保护。
+    @Test
+    fun guardsUnchangedCheckInPageAfterSecondSubmission() {
+        assertEquals(
+            MapUiPage.UNKNOWN,
+            AmapCheckInFollowUpPolicy.loopGuardPage(
+                page = MapUiPage.CHECK_IN,
+                action = MapUiAction.CLICK_CHECK_IN,
+                stage = AmapCheckInStage.SECOND_CLICK_SUBMITTED
+            )
+        )
+        assertEquals(
+            MapUiPage.CHECK_IN,
+            AmapCheckInFollowUpPolicy.loopGuardPage(
+                page = MapUiPage.CHECK_IN,
+                action = MapUiAction.CLICK_CHECK_IN,
+                stage = AmapCheckInStage.WAITING_SECOND_CLICK
             )
         )
     }
