@@ -16,6 +16,26 @@ class AmapUiProfileTest {
         )
     }
 
+    // 验证高德 Profile 不把手势目标作为可点击动作。
+    @Test
+    fun doesNotUseGestureTargetForAmap() {
+        val decision = profile.decide(
+            MapUiSnapshot(
+                packageName = profile.packageName,
+                appVersion = profile.supportedAppVersion,
+                nodes = listOf(
+                    MapUiNodeSnapshot(
+                        text = "我的",
+                        gestureTarget = true
+                    )
+                )
+            )
+        )
+
+        assertEquals(MapUiPage.UNKNOWN, decision.page)
+        assertEquals(MapUiAction.WAIT, decision.action)
+    }
+
     // 验证当前位置页直接点击打卡并跳过足迹入口。
     @Test
     fun checksInDirectlyWhenCurrentLocationPageIsVisible() {

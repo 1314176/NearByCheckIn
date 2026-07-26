@@ -27,6 +27,25 @@ class MapUiProfileModelsTest {
         assertFalse(snapshot.hasClickableLabel("我的"))
     }
 
+    // 验证手势目标属于可执行标签但不伪装成节点点击能力。
+    @Test
+    fun distinguishesNodeClickAndGestureTarget() {
+        val snapshot = MapUiSnapshot(
+            packageName = "sample",
+            appVersion = "1.0",
+            nodes = listOf(
+                MapUiNodeSnapshot(
+                    text = "我的",
+                    clickable = false,
+                    gestureTarget = true
+                )
+            )
+        )
+
+        assertFalse(snapshot.hasClickableLabel("我的"))
+        assertTrue(snapshot.hasActionableLabel("我的"))
+    }
+
     // 验证相同节点内容产生稳定页面指纹。
     @Test
     fun buildsStableFingerprintFromNormalizedNodes() {

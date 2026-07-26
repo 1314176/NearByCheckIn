@@ -26,6 +26,22 @@ class MapUiActionLabelsTest {
         )
     }
 
+    // 验证百度全部动作标签按首次出现顺序去重。
+    @Test
+    fun listsAllBaiduActionLabels() {
+        assertEquals(
+            listOf(
+                "我的",
+                "打卡点",
+                "立即打卡",
+                "立刻打卡",
+                "首页",
+                "知道了"
+            ),
+            MapUiActionLabels.allForProvider(MapProvider.BAIDU)
+        )
+    }
+
     // 验证高德动作映射允许直接打卡。
     @Test
     fun mapsAmapCheckInActionToVerifiedLabels() {

@@ -20,7 +20,7 @@ object BaiduUiProfile : ProviderUiProfile {
                     null,
                     "当前地点今日已打卡"
                 )
-            snapshot.hasClickableLabel("知道了") &&
+            snapshot.hasActionableLabel("知道了") &&
                     snapshot.containsAnyLabelFragment(KNOWN_PROMPT_MARKERS) ->
                 decision(
                     MapUiPage.HOME,
@@ -28,26 +28,26 @@ object BaiduUiProfile : ProviderUiProfile {
                     "关闭足迹提示"
                 )
             snapshot.hasLabel("我的足迹记录") &&
-                    snapshot.hasClickableLabel("首页") ->
+                    snapshot.hasActionableLabel("首页") ->
                 decision(
                     MapUiPage.FOOTPRINT,
                     MapUiAction.CLICK_HOME,
                     "历史页返回首页"
                 )
-            snapshot.hasClickableLabel("立即打卡") ||
-                    snapshot.hasClickableLabel("立刻打卡") ->
+            snapshot.hasActionableLabel("立即打卡") ||
+                    snapshot.hasActionableLabel("立刻打卡") ->
                 decision(
                     MapUiPage.CHECK_IN,
                     MapUiAction.CLICK_CHECK_IN,
                     "执行立即打卡"
                 )
-            snapshot.hasClickableLabel("打卡点") ->
+            snapshot.hasActionableLabel("打卡点") ->
                 decision(
                     MapUiPage.MINE,
                     MapUiAction.CLICK_CHECK_IN_POINT,
                     "进入打卡点"
                 )
-            snapshot.hasClickableLabel("我的") ->
+            snapshot.hasActionableLabel("我的") ->
                 decision(
                     MapUiPage.HOME,
                     MapUiAction.CLICK_MINE,

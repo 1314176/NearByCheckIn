@@ -4,7 +4,8 @@ data class MapUiNodeSnapshot(
     val text: String = "",
     val description: String = "",
     val viewId: String = "",
-    val clickable: Boolean = false
+    val clickable: Boolean = false,
+    val gestureTarget: Boolean = false
 ) {
 
     // 返回去除首尾空白后的全部非空标签。
@@ -38,6 +39,16 @@ data class MapUiSnapshot(
         }
     }
 
+    // 判断任一节点是否能通过节点点击或安全语义手势执行指定标签。
+    fun hasActionableLabel(label: String): Boolean {
+        return nodes.any { node ->
+            (node.clickable || node.gestureTarget) &&
+                    node.labels().any { value ->
+                        value.matchesUiLabel(label)
+                    }
+        }
+    }
+
     // 判断页面是否包含任一指定标签。
     fun hasAnyLabel(labels: List<String>): Boolean {
         return labels.any(::hasLabel)
@@ -65,7 +76,8 @@ data class MapUiSnapshot(
     // 生成用于识别页面是否变化的稳定指纹。
     fun fingerprint(): String {
         return nodes.joinToString(separator = "|") { node ->
-            "${node.labels().joinToString("/")}:${node.clickable}"
+            "${node.labels().joinToString("/")}" +
+                    ":${node.clickable}:${node.gestureTarget}"
         }
     }
 }

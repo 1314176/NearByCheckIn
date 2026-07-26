@@ -100,7 +100,14 @@ object BaiduMapAdapter {
         return MapUiSnapshotCollector.collect(
             rootNode = rootNode,
             packageName = BaiduUiProfile.packageName,
-            appVersion = appVersion
+            appVersion = appVersion,
+            gestureLabels = if (
+                appVersion == BaiduUiProfile.supportedAppVersion
+            ) {
+                MapUiActionLabels.allForProvider(MapProvider.BAIDU)
+            } else {
+                emptyList()
+            }
         )
     }
 

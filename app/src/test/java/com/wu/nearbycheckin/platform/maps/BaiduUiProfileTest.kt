@@ -17,6 +17,25 @@ class BaiduUiProfileTest {
         )
     }
 
+    // 验证百度允许由安全语义手势目标进入“我的”。
+    @Test
+    fun opensMineFromGestureTarget() {
+        val decision = profile.decide(
+            MapUiSnapshot(
+                packageName = profile.packageName,
+                appVersion = profile.supportedAppVersion,
+                nodes = listOf(
+                    MapUiNodeSnapshot(
+                        text = "我的",
+                        gestureTarget = true
+                    )
+                )
+            )
+        )
+
+        assertEquals(MapUiAction.CLICK_MINE, decision.action)
+    }
+
     // 验证“我的”页面进入打卡点。
     @Test
     fun opensCheckInPointFromMine() {

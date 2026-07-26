@@ -4,6 +4,13 @@ import com.wu.nearbycheckin.core.model.MapProvider
 
 object MapUiActionLabels {
 
+    // 返回指定地图所有动作的去重白名单标签。
+    fun allForProvider(provider: MapProvider): List<String> {
+        return MapUiAction.entries
+            .flatMap { action -> forProvider(provider, action) }
+            .distinct()
+    }
+
     // 返回指定地图和动作允许点击的当前版本标签。
     fun forProvider(
         provider: MapProvider,

@@ -1,5 +1,6 @@
 package com.wu.nearbycheckin.platform.maps
 
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
 object MapUiSnapshotCollector {
@@ -8,14 +9,24 @@ object MapUiSnapshotCollector {
     fun collect(
         rootNode: AccessibilityNodeInfo?,
         packageName: String,
-        appVersion: String
+        appVersion: String,
+        gestureLabels: List<String> = emptyList()
     ): MapUiSnapshot {
-        val nodes = mutableListOf<MapUiNodeSnapshot>()
+        val nodes = mutableListOf<CollectedNode>()
         collectNodes(rootNode, depth = 0, result = nodes)
+        val gestureNodeIndexes = gestureNodeIndexes(
+            nodes = nodes,
+            labels = gestureLabels,
+            windowBounds = rootNode?.toMapUiBounds()
+        )
         return MapUiSnapshot(
             packageName = packageName,
             appVersion = appVersion,
-            nodes = nodes
+            nodes = nodes.mapIndexed { index, node ->
+                node.snapshot.copy(
+                    gestureTarget = index in gestureNodeIndexes
+                )
+            }
         )
     }
 
@@ -51,7 +62,7 @@ object MapUiSnapshotCollector {
     private fun collectNodes(
         node: AccessibilityNodeInfo?,
         depth: Int,
-        result: MutableList<MapUiNodeSnapshot>
+        result: MutableList<CollectedNode>
     ) {
         if (
             node == null ||
@@ -61,11 +72,18 @@ object MapUiSnapshotCollector {
             return
         }
 
-        result += MapUiNodeSnapshot(
-            text = node.text?.toString().orEmpty(),
-            description = node.contentDescription?.toString().orEmpty(),
-            viewId = node.viewIdResourceName.orEmpty(),
-            clickable = node.hasClickableAncestor()
+        result += CollectedNode(
+            snapshot = MapUiNodeSnapshot(
+                text = node.text?.toString().orEmpty(),
+                description = node.contentDescription?.toString().orEmpty(),
+                viewId = node.viewIdResourceName.orEmpty(),
+                clickable = node.hasClickableAncestor()
+            ),
+            gestureCandidate = MapUiGestureCandidate(
+                enabled = node.isEnabled,
+                visible = node.isVisibleToUser,
+                bounds = node.toMapUiBounds()
+            )
         )
 
         for (childIndex in 0 until node.childCount) {
@@ -75,6 +93,50 @@ object MapUiSnapshotCollector {
                 result = result
             )
         }
+    }
+
+    // 返回满足唯一标签与安全边界规则的节点索引。
+    private fun gestureNodeIndexes(
+        nodes: List<CollectedNode>,
+        labels: List<String>,
+        windowBounds: MapUiBounds?
+    ): Set<Int> {
+        if (labels.isEmpty() || windowBounds == null) {
+            return emptySet()
+        }
+        return labels.flatMap { label ->
+            val matchingIndexes = nodes.withIndex()
+                .filter { indexedNode ->
+                    indexedNode.value.snapshot.labels().any { value ->
+                        value.matchesUiLabel(label)
+                    }
+                }
+                .map { indexedNode -> indexedNode.index }
+            val selection = MapUiGestureTargetPolicy.select(
+                candidates = matchingIndexes.map { index ->
+                    nodes[index].gestureCandidate
+                },
+                windowBounds = windowBounds
+            )
+            if (selection.target != null) {
+                matchingIndexes
+            } else {
+                emptyList()
+            }
+        }.toSet()
+    }
+
+    // 把节点屏幕边界转换为纯 Kotlin 边界。
+    private fun AccessibilityNodeInfo.toMapUiBounds(): MapUiBounds {
+        val rect = Rect().also { bounds ->
+            getBoundsInScreen(bounds)
+        }
+        return MapUiBounds(
+            left = rect.left,
+            top = rect.top,
+            right = rect.right,
+            bottom = rect.bottom
+        )
     }
 
     // 在快照采集边界内汇总目标标签且不保留原始节点内容。
@@ -198,6 +260,11 @@ object MapUiSnapshotCollector {
 
     private data class MutableNodeCounter(
         var count: Int = 0
+    )
+
+    private data class CollectedNode(
+        val snapshot: MapUiNodeSnapshot,
+        val gestureCandidate: MapUiGestureCandidate
     )
 
     private const val MAX_DEPTH = 12
