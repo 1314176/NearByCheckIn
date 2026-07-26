@@ -87,6 +87,7 @@ enum class MapUiPage {
     MINE,
     FOOTPRINT,
     CHECK_IN,
+    RATE_LIMITED,
     SUCCESS,
     ALREADY_COMPLETED,
     BLOCKED,
@@ -100,6 +101,7 @@ enum class MapUiAction {
     CLICK_CHECK_IN,
     CLICK_HOME,
     DISMISS_PROMPT,
+    CLICK_DONE,
     WAIT,
     BLOCK
 }

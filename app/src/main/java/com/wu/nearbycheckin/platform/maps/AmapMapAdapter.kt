@@ -100,7 +100,14 @@ object AmapMapAdapter {
         return MapUiSnapshotCollector.collect(
             rootNode = rootNode,
             packageName = AmapUiProfile.packageName,
-            appVersion = appVersion
+            appVersion = appVersion,
+            gestureLabels = if (
+                appVersion == AmapUiProfile.supportedAppVersion
+            ) {
+                MapUiActionLabels.allForProvider(MapProvider.AMAP)
+            } else {
+                emptyList()
+            }
         )
     }
 

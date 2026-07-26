@@ -1,7 +1,6 @@
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class BaiduUiProfileTest {
@@ -84,15 +83,15 @@ class BaiduUiProfileTest {
         )
     }
 
-    // 验证明确定成功组合才进入成功终态。
+    // 验证百度成功页先返回“完成”清理动作。
     @Test
-    fun recognizesExplicitSuccessEvidence() {
+    fun cleansUpExplicitSuccessPage() {
         val decision = profile.decide(
             snapshot(texts = listOf("打卡成功", "完成"))
         )
 
         assertEquals(MapUiPage.SUCCESS, decision.page)
-        assertNull(decision.action)
+        assertEquals(MapUiAction.CLICK_DONE, decision.action)
     }
 
     // 验证当前打卡页的明确提示可识别为已经完成。

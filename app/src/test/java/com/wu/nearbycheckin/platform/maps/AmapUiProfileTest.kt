@@ -16,56 +16,55 @@ class AmapUiProfileTest {
         )
     }
 
-    // 验证高德 Profile 不把手势目标作为可点击动作。
+    // 验证高德允许安全语义手势目标进入“我的”。
     @Test
-    fun doesNotUseGestureTargetForAmap() {
+    fun opensMineFromGestureTarget() {
         val decision = profile.decide(
-            MapUiSnapshot(
-                packageName = profile.packageName,
-                appVersion = profile.supportedAppVersion,
-                nodes = listOf(
-                    MapUiNodeSnapshot(
-                        text = "我的",
-                        gestureTarget = true
-                    )
-                )
-            )
+            snapshot(gestureTargets = listOf("我的"))
         )
 
-        assertEquals(MapUiPage.UNKNOWN, decision.page)
-        assertEquals(MapUiAction.WAIT, decision.action)
+        assertEquals(MapUiPage.HOME, decision.page)
+        assertEquals(MapUiAction.CLICK_MINE, decision.action)
     }
 
-    // 验证当前位置页直接点击打卡并跳过足迹入口。
+    // 验证高德从“我的”页面进入打卡点。
     @Test
-    fun checksInDirectlyWhenCurrentLocationPageIsVisible() {
+    fun opensCheckInPointFromMine() {
         val decision = profile.decide(
-            snapshot(
-                texts = listOf("当前位置：", "浦联佳苑"),
-                clickable = listOf("打卡")
-            )
+            snapshot(gestureTargets = listOf("打卡点"))
+        )
+
+        assertEquals(MapUiPage.MINE, decision.page)
+        assertEquals(MapUiAction.CLICK_CHECK_IN_POINT, decision.action)
+    }
+
+    // 验证高德打卡页执行“开始打卡”。
+    @Test
+    fun startsCheckInFromCheckInPointPage() {
+        val decision = profile.decide(
+            snapshot(gestureTargets = listOf("开始打卡"))
         )
 
         assertEquals(MapUiPage.CHECK_IN, decision.page)
         assertEquals(MapUiAction.CLICK_CHECK_IN, decision.action)
     }
 
-    // 验证只有未出现打卡按钮时才进入足迹。
+    // 验证高德频率限制文案进入显式页面状态但不自行点击。
     @Test
-    fun opensFootprintOnlyWhenCheckInIsUnavailable() {
+    fun recognizesRateLimitedEvidence() {
         val decision = profile.decide(
-            snapshot(clickable = listOf("我的足迹"))
+            snapshot(texts = listOf("打卡太频繁，请稍后再试"))
         )
 
-        assertEquals(MapUiPage.MINE, decision.page)
-        assertEquals(MapUiAction.CLICK_FOOTPRINT, decision.action)
+        assertEquals(MapUiPage.RATE_LIMITED, decision.page)
+        assertEquals(MapUiAction.WAIT, decision.action)
     }
 
-    // 验证未知页面同时出现打卡和足迹时不会错误进入足迹。
+    // 验证高德不再沿用旧足迹动作。
     @Test
-    fun waitsWhenCheckInAndFootprintAreBothClickableWithoutLocationEvidence() {
+    fun doesNotUseLegacyFootprintRoute() {
         val decision = profile.decide(
-            snapshot(clickable = listOf("打卡", "我的足迹"))
+            snapshot(gestureTargets = listOf("我的足迹"))
         )
 
         assertEquals(MapUiPage.UNKNOWN, decision.page)
@@ -108,7 +107,8 @@ class AmapUiProfileTest {
     // 构造不依赖 Android 的高德页面快照。
     private fun snapshot(
         texts: List<String> = emptyList(),
-        clickable: List<String> = emptyList()
+        clickable: List<String> = emptyList(),
+        gestureTargets: List<String> = emptyList()
     ): MapUiSnapshot {
         return MapUiSnapshot(
             packageName = profile.packageName,
@@ -117,6 +117,8 @@ class AmapUiProfileTest {
                 MapUiNodeSnapshot(text = text)
             } + clickable.map { text ->
                 MapUiNodeSnapshot(text = text, clickable = true)
+            } + gestureTargets.map { text ->
+                MapUiNodeSnapshot(text = text, gestureTarget = true)
             }
         )
     }

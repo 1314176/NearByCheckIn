@@ -13,7 +13,11 @@ object BaiduUiProfile : ProviderUiProfile {
                 decision(MapUiPage.BLOCKED, MapUiAction.BLOCK, "人工阻断")
             snapshot.hasLabel("打卡成功") &&
                     snapshot.hasAnyLabel(listOf("完成", "成功")) ->
-                decision(MapUiPage.SUCCESS, null, "打卡成功")
+                decision(
+                    MapUiPage.SUCCESS,
+                    MapUiAction.CLICK_DONE,
+                    "打卡成功，等待关闭结果页"
+                )
             snapshot.containsLabelFragment("当前地点今日已打卡") ->
                 decision(
                     MapUiPage.ALREADY_COMPLETED,

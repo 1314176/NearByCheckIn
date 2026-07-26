@@ -36,20 +36,47 @@ class MapUiActionLabelsTest {
                 "立即打卡",
                 "立刻打卡",
                 "首页",
-                "知道了"
+                "知道了",
+                "完成"
             ),
             MapUiActionLabels.allForProvider(MapProvider.BAIDU)
         )
     }
 
-    // 验证高德动作映射允许直接打卡。
+    // 验证高德动作映射使用当前真机真实路径标签。
     @Test
-    fun mapsAmapCheckInActionToVerifiedLabels() {
+    fun mapsAmapActionsToVerifiedLabels() {
         assertEquals(
-            listOf("打卡", "点击打卡"),
+            listOf("打卡点"),
+            MapUiActionLabels.forProvider(
+                MapProvider.AMAP,
+                MapUiAction.CLICK_CHECK_IN_POINT
+            )
+        )
+        assertEquals(
+            listOf("开始打卡"),
             MapUiActionLabels.forProvider(
                 MapProvider.AMAP,
                 MapUiAction.CLICK_CHECK_IN
+            )
+        )
+    }
+
+    // 验证“完成”只属于百度成功页清理动作。
+    @Test
+    fun mapsDoneOnlyToBaiduCleanup() {
+        assertEquals(
+            listOf("完成"),
+            MapUiActionLabels.forProvider(
+                MapProvider.BAIDU,
+                MapUiAction.CLICK_DONE
+            )
+        )
+        assertEquals(
+            emptyList<String>(),
+            MapUiActionLabels.forProvider(
+                MapProvider.AMAP,
+                MapUiAction.CLICK_DONE
             )
         )
     }

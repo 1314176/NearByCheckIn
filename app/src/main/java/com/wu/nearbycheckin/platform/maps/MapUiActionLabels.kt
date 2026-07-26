@@ -27,12 +27,14 @@ object MapUiActionLabels {
                 listOf("首页")
             MapProvider.BAIDU to MapUiAction.DISMISS_PROMPT ->
                 listOf("知道了")
+            MapProvider.BAIDU to MapUiAction.CLICK_DONE ->
+                listOf("完成")
             MapProvider.AMAP to MapUiAction.CLICK_MINE ->
                 listOf("我的")
-            MapProvider.AMAP to MapUiAction.CLICK_FOOTPRINT ->
-                listOf("足迹", "我的足迹")
+            MapProvider.AMAP to MapUiAction.CLICK_CHECK_IN_POINT ->
+                listOf("打卡点")
             MapProvider.AMAP to MapUiAction.CLICK_CHECK_IN ->
-                listOf("打卡", "点击打卡")
+                listOf("开始打卡")
             else -> emptyList()
         }
     }
