@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 03:46
+// @Author: MrWu
+// @File: BaiduUiProfile.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 object BaiduUiProfile : ProviderUiProfile {
@@ -17,6 +23,12 @@ object BaiduUiProfile : ProviderUiProfile {
                     MapUiPage.SUCCESS,
                     MapUiAction.CLICK_DONE,
                     "打卡成功，等待关闭结果页"
+                )
+            snapshot.containsLabelFragment(SHARE_PANEL_MARKER) ->
+                decision(
+                    MapUiPage.SHARE_PANEL,
+                    MapUiAction.DISMISS_SHARE_PANEL,
+                    "关闭打卡分享面板"
                 )
             snapshot.containsLabelFragment("当前地点今日已打卡") ->
                 decision(
@@ -85,4 +97,5 @@ object BaiduUiProfile : ProviderUiProfile {
     private val KNOWN_PROMPT_MARKERS = listOf(
         "足迹点待点亮"
     )
+    private const val SHARE_PANEL_MARKER = "请选择分享主题"
 }

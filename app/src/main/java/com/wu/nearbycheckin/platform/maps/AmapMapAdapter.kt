@@ -97,7 +97,7 @@ object AmapMapAdapter {
         rootNode: AccessibilityNodeInfo?,
         appVersion: String
     ): MapUiSnapshot {
-        return MapUiSnapshotCollector.collect(
+        val snapshot = MapUiSnapshotCollector.collect(
             rootNode = rootNode,
             packageName = AmapUiProfile.packageName,
             appVersion = appVersion,
@@ -109,6 +109,43 @@ object AmapMapAdapter {
                 emptyList()
             }
         )
+        val checkInButtonTarget = if (
+            appVersion == AmapUiProfile.supportedAppVersion
+        ) {
+            selectCheckInButtonTarget(rootNode).target
+        } else {
+            null
+        }
+        val checkInPointTarget = if (
+            appVersion == AmapUiProfile.supportedAppVersion
+        ) {
+            selectCheckInPointTarget(rootNode).target
+        } else {
+            null
+        }
+        return if (
+            checkInButtonTarget != null &&
+            !snapshot.hasLabel("打卡")
+        ) {
+            snapshot.copy(
+                nodes = snapshot.nodes + MapUiNodeSnapshot(
+                    text = "打卡",
+                    gestureTarget = true
+                )
+            )
+        } else if (
+            checkInPointTarget != null &&
+            !snapshot.hasLabel("打卡点")
+        ) {
+            snapshot.copy(
+                nodes = snapshot.nodes + MapUiNodeSnapshot(
+                    text = "打卡点",
+                    gestureTarget = true
+                )
+            )
+        } else {
+            snapshot
+        }
     }
 
     // 执行高德 Profile 返回的单个动作。
@@ -120,7 +157,8 @@ object AmapMapAdapter {
     ): AccessibilityClickResult {
         val gestureEnabled =
             appVersion == AmapUiProfile.supportedAppVersion
-        return AccessibilityNodeActions.clickFirstMatchingLabel(
+        val semanticResult =
+            AccessibilityNodeActions.clickFirstMatchingLabel(
             rootNode = rootNode,
             labels = MapUiActionLabels.forProvider(
                 MapProvider.AMAP,
@@ -133,6 +171,111 @@ object AmapMapAdapter {
             },
             preferGesture = gestureEnabled
         )
+        if (
+            semanticResult.success ||
+            !gestureEnabled
+        ) {
+            return semanticResult
+        }
+        val fallbackSelection = when (action) {
+            MapUiAction.CLICK_CHECK_IN_POINT ->
+                selectCheckInPointTarget(rootNode)
+            MapUiAction.CLICK_CHECK_IN ->
+                selectCheckInButtonTarget(rootNode)
+            else -> return semanticResult
+        }
+        return MapUiGestureFallbackExecutor.execute(
+            selection = fallbackSelection,
+            tap = gestureTap
+        )
+    }
+
+    // 从高德窗口节点树选择当前版本“打卡点”的卡片相对目标。
+    private fun selectCheckInPointTarget(
+        rootNode: AccessibilityNodeInfo?
+    ): MapUiGestureTargetSelection {
+        if (rootNode == null) {
+            return MapUiGestureTargetSelection(
+                rejectionReason = "窗口根节点为空"
+            )
+        }
+        return AmapCheckInPointGesturePolicy.select(
+            candidates = collectActionCandidates(rootNode),
+            windowBounds = rootNode.toMapUiBounds()
+        )
+    }
+
+    // 从高德窗口节点树选择当前版本右下角打卡按钮目标。
+    private fun selectCheckInButtonTarget(
+        rootNode: AccessibilityNodeInfo?
+    ): MapUiGestureTargetSelection {
+        if (rootNode == null) {
+            return MapUiGestureTargetSelection(
+                rejectionReason = "窗口根节点为空"
+            )
+        }
+        return AmapCheckInButtonGesturePolicy.select(
+            candidates = collectActionCandidates(rootNode),
+            windowBounds = rootNode.toMapUiBounds()
+        )
+    }
+
+    // 收集当前窗口内具备点击动作的候选边界。
+    private fun collectActionCandidates(
+        rootNode: AccessibilityNodeInfo
+    ): List<MapUiGestureCandidate> {
+        val result = mutableListOf<MapUiGestureCandidate>()
+        collectActionCandidateNodes(
+            node = rootNode,
+            depth = 0,
+            windowBounds = rootNode.toMapUiBounds(),
+            result = result
+        )
+        return result
+    }
+
+    // 递归收集当前窗口内具备点击动作的候选边界。
+    private fun collectActionCandidateNodes(
+        node: AccessibilityNodeInfo?,
+        depth: Int,
+        windowBounds: MapUiBounds,
+        result: MutableList<MapUiGestureCandidate>
+    ) {
+        if (
+            node == null ||
+            depth > MAX_NODE_DEPTH ||
+            result.size >= MAX_TOTAL_NODE_COUNT
+        ) {
+            return
+        }
+        if (
+            node.isClickable ||
+            node.actionList.any { action ->
+                action.id == AccessibilityNodeInfo.ACTION_CLICK
+            }
+        ) {
+            val candidate = MapUiGestureCandidate(
+                enabled = node.isEnabled,
+                visible = node.isVisibleToUser,
+                bounds = node.toMapUiBounds()
+            )
+            if (
+                AmapActionCandidateAdmissionPolicy.accepts(
+                    candidate = candidate,
+                    windowBounds = windowBounds
+                )
+            ) {
+                result += candidate
+            }
+        }
+        for (childIndex in 0 until node.childCount) {
+            collectActionCandidateNodes(
+                node = node.getChild(childIndex),
+                depth = depth + 1,
+                windowBounds = windowBounds,
+                result = result
+            )
+        }
     }
 
     /**

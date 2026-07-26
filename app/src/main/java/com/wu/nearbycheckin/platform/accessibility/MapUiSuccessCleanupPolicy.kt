@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 23:50
+// @Author: MrWu
+// @File: MapUiSuccessCleanupPolicy.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.accessibility
 
 import com.wu.nearbycheckin.core.model.MapProvider

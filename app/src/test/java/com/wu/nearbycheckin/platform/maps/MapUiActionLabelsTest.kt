@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:19
+// @Author: MrWu
+// @File: MapUiActionLabelsTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals
@@ -54,7 +60,7 @@ class MapUiActionLabelsTest {
             )
         )
         assertEquals(
-            listOf("开始打卡"),
+            listOf("开始打卡", "打卡"),
             MapUiActionLabels.forProvider(
                 MapProvider.AMAP,
                 MapUiAction.CLICK_CHECK_IN

@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 23:10
+// @Author: MrWu
+// @File: AccessibilityNodeBounds.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import android.graphics.Rect

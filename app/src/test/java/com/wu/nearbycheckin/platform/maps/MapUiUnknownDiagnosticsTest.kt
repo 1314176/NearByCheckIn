@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 06:04
+// @Author: MrWu
+// @File: MapUiUnknownDiagnosticsTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals

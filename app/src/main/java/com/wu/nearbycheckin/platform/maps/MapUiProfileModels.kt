@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 02:09
+// @Author: MrWu
+// @File: MapUiProfileModels.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 data class MapUiNodeSnapshot(
@@ -89,6 +95,7 @@ enum class MapUiPage {
     CHECK_IN,
     RATE_LIMITED,
     SUCCESS,
+    SHARE_PANEL,
     ALREADY_COMPLETED,
     BLOCKED,
     UNKNOWN
@@ -102,6 +109,7 @@ enum class MapUiAction {
     CLICK_HOME,
     DISMISS_PROMPT,
     CLICK_DONE,
+    DISMISS_SHARE_PANEL,
     WAIT,
     BLOCK
 }

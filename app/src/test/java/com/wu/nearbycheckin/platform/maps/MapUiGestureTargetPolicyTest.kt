@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 20:29
+// @Author: MrWu
+// @File: MapUiGestureTargetPolicyTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals
@@ -45,6 +51,29 @@ class MapUiGestureTargetPolicyTest {
                 window
             ).rejectionReason
         )
+    }
+
+    // 验证隐藏重复节点不会阻断唯一可见安全目标。
+    @Test
+    fun ignoresHiddenDuplicateWhenSelectingSafeTarget() {
+        val result = MapUiGestureTargetPolicy.select(
+            candidates = listOf(
+                MapUiGestureCandidate(
+                    enabled = true,
+                    visible = false,
+                    bounds = MapUiBounds(400, 400, 600, 500)
+                ),
+                MapUiGestureCandidate(
+                    enabled = true,
+                    visible = true,
+                    bounds = MapUiBounds(400, 500, 600, 600)
+                )
+            ),
+            windowBounds = window
+        )
+
+        assertEquals(MapUiGestureTarget(500, 550), result.target)
+        assertEquals("", result.rejectionReason)
     }
 
     // 验证禁用、不可见、空边界和中心越界均关闭回退。

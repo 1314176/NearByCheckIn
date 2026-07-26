@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 22:19
+// @Author: MrWu
+// @File: MapUiGestureFallbackExecutorTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals
@@ -23,7 +29,10 @@ class MapUiGestureFallbackExecutorTest {
 
         assertTrue(result.success)
         assertEquals(1, callCount)
-        assertEquals("语义边界手势已提交", result.message)
+        assertEquals(
+            "语义边界手势已提交：(990,2100)",
+            result.message
+        )
     }
 
     // 验证拒绝目标不调用手势。
@@ -59,6 +68,9 @@ class MapUiGestureFallbackExecutorTest {
         )
 
         assertFalse(result.success)
-        assertEquals("语义边界手势提交失败", result.message)
+        assertEquals(
+            "语义边界手势提交失败：(990,2100)",
+            result.message
+        )
     }
 }

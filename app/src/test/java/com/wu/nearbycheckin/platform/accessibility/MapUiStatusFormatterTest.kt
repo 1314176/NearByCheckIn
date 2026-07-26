@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 05:15
+// @Author: MrWu
+// @File: MapUiStatusFormatterTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.accessibility
 
 import com.wu.nearbycheckin.core.model.MapProvider

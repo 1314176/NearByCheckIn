@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:05
+// @Author: MrWu
+// @File: AmapUiProfile.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 object AmapUiProfile : ProviderUiProfile {
@@ -26,13 +32,14 @@ object AmapUiProfile : ProviderUiProfile {
                     null,
                     "当前地点已打卡"
                 )
-            snapshot.hasActionableLabel("开始打卡") ->
+            snapshot.hasActionableLabel("开始打卡") ||
+                    snapshot.hasActionableLabel("打卡") ->
                 decision(
                     MapUiPage.CHECK_IN,
                     MapUiAction.CLICK_CHECK_IN,
                     "执行开始打卡"
                 )
-            snapshot.hasActionableLabel("打卡点") ->
+            snapshot.hasLabel("打卡点") ->
                 decision(
                     MapUiPage.MINE,
                     MapUiAction.CLICK_CHECK_IN_POINT,

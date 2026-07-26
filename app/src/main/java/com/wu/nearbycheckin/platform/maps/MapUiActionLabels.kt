@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:20
+// @Author: MrWu
+// @File: MapUiActionLabels.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import com.wu.nearbycheckin.core.model.MapProvider
@@ -34,7 +40,7 @@ object MapUiActionLabels {
             MapProvider.AMAP to MapUiAction.CLICK_CHECK_IN_POINT ->
                 listOf("打卡点")
             MapProvider.AMAP to MapUiAction.CLICK_CHECK_IN ->
-                listOf("开始打卡")
+                listOf("开始打卡", "打卡")
             else -> emptyList()
         }
     }

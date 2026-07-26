@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:02
+// @Author: MrWu
+// @File: AmapUiProfileTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals
@@ -38,11 +44,39 @@ class AmapUiProfileTest {
         assertEquals(MapUiAction.CLICK_CHECK_IN_POINT, decision.action)
     }
 
+    // 验证“打卡点”文本优先于底部“我的”入口交给安全执行器校验。
+    @Test
+    fun prefersCheckInPointTextOverMineEntry() {
+        val decision = profile.decide(
+            snapshot(
+                texts = listOf("打卡点"),
+                gestureTargets = listOf("我的")
+            )
+        )
+
+        assertEquals(MapUiPage.MINE, decision.page)
+        assertEquals(
+            MapUiAction.CLICK_CHECK_IN_POINT,
+            decision.action
+        )
+    }
+
     // 验证高德打卡页执行“开始打卡”。
     @Test
     fun startsCheckInFromCheckInPointPage() {
         val decision = profile.decide(
             snapshot(gestureTargets = listOf("开始打卡"))
+        )
+
+        assertEquals(MapUiPage.CHECK_IN, decision.page)
+        assertEquals(MapUiAction.CLICK_CHECK_IN, decision.action)
+    }
+
+    // 验证真机“打卡”按钮也进入开始打卡动作。
+    @Test
+    fun startsCheckInFromCurrentCheckInLabel() {
+        val decision = profile.decide(
+            snapshot(gestureTargets = listOf("打卡"))
         )
 
         assertEquals(MapUiPage.CHECK_IN, decision.page)

@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 23:52
+// @Author: MrWu
+// @File: MapUiClickPreferenceExecutor.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 object MapUiClickPreferenceExecutor {

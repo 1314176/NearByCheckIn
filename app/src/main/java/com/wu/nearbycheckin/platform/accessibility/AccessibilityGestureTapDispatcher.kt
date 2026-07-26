@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 23:09
+// @Author: MrWu
+// @File: AccessibilityGestureTapDispatcher.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.accessibility
 
 import android.accessibilityservice.AccessibilityService

@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:44
+// @Author: MrWu
+// @File: MapOperationResultProbeTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.accessibility
 
 import org.junit.Assert.assertEquals

@@ -116,8 +116,20 @@ object BaiduMapAdapter {
         rootNode: AccessibilityNodeInfo?,
         action: MapUiAction,
         appVersion: String,
-        gestureTap: (Int, Int) -> Boolean
+        gestureTap: (Int, Int) -> Boolean,
+        dismissSharePanel: () -> Boolean
     ): AccessibilityClickResult {
+        if (action == MapUiAction.DISMISS_SHARE_PANEL) {
+            val dismissed = dismissSharePanel()
+            return AccessibilityClickResult(
+                success = dismissed,
+                message = if (dismissed) {
+                    "已提交系统返回动作：关闭分享面板"
+                } else {
+                    "系统返回动作提交失败：关闭分享面板"
+                }
+            )
+        }
         return AccessibilityNodeActions.clickFirstMatchingLabel(
             rootNode = rootNode,
             labels = MapUiActionLabels.forProvider(

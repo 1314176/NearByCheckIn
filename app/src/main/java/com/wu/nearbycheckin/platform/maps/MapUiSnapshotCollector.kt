@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:21
+// @Author: MrWu
+// @File: MapUiSnapshotCollector.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import android.view.accessibility.AccessibilityNodeInfo

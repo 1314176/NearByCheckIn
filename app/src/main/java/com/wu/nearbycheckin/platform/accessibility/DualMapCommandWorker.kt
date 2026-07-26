@@ -48,6 +48,9 @@ class DualMapCommandWorker(
     private val windowRecoveryPolicy =
         MapWindowRecoveryPolicy()
     private var activeCommand: MapCommand? = null
+    private var activeStartedAtMillis = 0L
+    private var activeAmapCheckInStage =
+        AmapCheckInStage.NONE
 
     val isBusy: Boolean
         get() = activeCommand != null
@@ -73,6 +76,50 @@ class DualMapCommandWorker(
     fun stop() {
         mainHandler.removeCallbacksAndMessages(null)
         activeCommand = null
+        activeStartedAtMillis = 0L
+        activeAmapCheckInStage = AmapCheckInStage.NONE
+    }
+
+    // 在第二次高德打卡已提交后把瞬时频率限制提示回写为成功结果。
+    fun onAmapRateLimitDetected(message: String) {
+        val command = activeCommand ?: return
+        if (
+            command.provider != MapProvider.AMAP ||
+            activeAmapCheckInStage !=
+            AmapCheckInStage.SECOND_CLICK_SUBMITTED
+        ) {
+            return
+        }
+        val decision = MapUiDecision(
+            page = MapUiPage.RATE_LIMITED,
+            action = MapUiAction.WAIT,
+            evidence = "第二次点击触发频率限制",
+            reason = "第一次打卡已生效"
+        )
+        val profileEvidence = appendBoundedWorkerEvidence(
+            structuredEvidence = buildMapUiEvidence(
+                provider = command.provider,
+                packageName = AmapUiProfile.packageName,
+                appVersion = appVersion(AmapUiProfile.packageName),
+                profileVersion = AmapUiProfile.profileVersion,
+                page = decision.page,
+                action = decision.action,
+                evidence = decision.evidence
+            ),
+            key = "transientMessage",
+            value = message
+        )
+        reportStructuredStatus(
+            event = "瞬时结果识别",
+            structuredEvidence = profileEvidence
+        )
+        finishProfileOutcome(
+            command = command,
+            startedAtMillis = activeStartedAtMillis,
+            outcome = MapUiExecutionOutcome.SUCCESS,
+            decision = decision,
+            profileEvidence = profileEvidence
+        )
     }
 
     // 领取下一个命令并在地图位于后台时保留任务等待窗口恢复。
@@ -84,6 +131,8 @@ class DualMapCommandWorker(
         val command = coordinator.claimNextCommand(WORKER_ID)
             ?: return
         activeCommand = command
+        activeStartedAtMillis = System.currentTimeMillis()
+        activeAmapCheckInStage = AmapCheckInStage.NONE
         val profile = command.provider.uiProfile()
         reportStructuredStatus(
             event = "命令开始",
@@ -101,7 +150,7 @@ class DualMapCommandWorker(
             {
                 executeNextAction(
                     command = command,
-                    startedAtMillis = System.currentTimeMillis()
+                    startedAtMillis = activeStartedAtMillis
                 )
             },
             MAP_OPERATION_INITIAL_DELAY_MILLIS
@@ -374,6 +423,7 @@ class DualMapCommandWorker(
         } else {
             amapCheckInStage
         }
+        activeAmapCheckInStage = nextAmapCheckInStage
         val nextBaiduCheckInSubmitted =
             baiduCheckInSubmitted || (
                     command.provider == MapProvider.BAIDU &&
@@ -590,7 +640,12 @@ class DualMapCommandWorker(
                 rootNode = rootNode,
                 action = action,
                 appVersion = appVersion,
-                gestureTap = gestureTapDispatcher::tap
+                gestureTap = gestureTapDispatcher::tap,
+                dismissSharePanel = {
+                    service.performGlobalAction(
+                        AccessibilityService.GLOBAL_ACTION_BACK
+                    )
+                }
             )
         MapProvider.AMAP ->
             AmapMapAdapter.execute(
@@ -763,6 +818,8 @@ class DualMapCommandWorker(
             structuredEvidence = result.evidenceText
         )
         activeCommand = null
+        activeStartedAtMillis = 0L
+        activeAmapCheckInStage = AmapCheckInStage.NONE
         processNextCommand()
     }
 

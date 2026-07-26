@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 03:44
+// @Author: MrWu
+// @File: BaiduUiProfileTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals
@@ -92,6 +98,44 @@ class BaiduUiProfileTest {
 
         assertEquals(MapUiPage.SUCCESS, decision.page)
         assertEquals(MapUiAction.CLICK_DONE, decision.action)
+    }
+
+    // 验证完成后的分享面板优先关闭而不点击被遮挡的打卡按钮。
+    @Test
+    fun dismissesSharePanelBeforeHiddenCheckInButton() {
+        val decision = profile.decide(
+            snapshot(
+                texts = listOf("请选择分享主题"),
+                clickable = listOf("立即打卡")
+            )
+        )
+
+        assertEquals(MapUiPage.SHARE_PANEL, decision.page)
+        assertEquals(
+            MapUiAction.DISMISS_SHARE_PANEL,
+            decision.action
+        )
+    }
+
+    // 验证分享面板通过系统返回动作关闭。
+    @Test
+    fun executesSharePanelDismissalUsingSystemBack() {
+        var dismissed = false
+
+        val result = BaiduMapAdapter.execute(
+            rootNode = null,
+            action = MapUiAction.DISMISS_SHARE_PANEL,
+            appVersion = profile.supportedAppVersion,
+            gestureTap = { _, _ -> false },
+            dismissSharePanel = {
+                dismissed = true
+                true
+            }
+        )
+
+        assertEquals(true, dismissed)
+        assertEquals(true, result.success)
+        assertEquals("已提交系统返回动作：关闭分享面板", result.message)
     }
 
     // 验证当前打卡页的明确提示可识别为已经完成。

@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 04:29
+// @Author: MrWu
+// @File: BoundedAncestorFinder.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 internal object BoundedAncestorFinder {

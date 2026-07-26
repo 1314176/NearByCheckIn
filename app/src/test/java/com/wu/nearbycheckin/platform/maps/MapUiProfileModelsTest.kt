@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 02:04
+// @Author: MrWu
+// @File: MapUiProfileModelsTest.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 import org.junit.Assert.assertEquals

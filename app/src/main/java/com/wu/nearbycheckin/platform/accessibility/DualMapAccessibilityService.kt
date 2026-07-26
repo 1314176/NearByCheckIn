@@ -85,7 +85,17 @@ class DualMapAccessibilityService : AccessibilityService() {
 
     // 按包名和时间节流窗口变化诊断。
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || event.eventType !in DIAGNOSTIC_EVENT_TYPES) {
+        if (event == null) {
+            return
+        }
+        if (
+            event.eventType ==
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
+        ) {
+            forwardTransientMapMessage(event)
+            return
+        }
+        if (event.eventType !in DIAGNOSTIC_EVENT_TYPES) {
             return
         }
         val packageName = event.packageName?.toString().orEmpty()
@@ -105,6 +115,26 @@ class DualMapAccessibilityService : AccessibilityService() {
         }
         lastInspectionTimeMillis = nowMillis
         inspectCurrentWindows("窗口变化")
+    }
+
+    // 把高德瞬时频率限制提示转交给当前命令并避免写入无关通知内容。
+    private fun forwardTransientMapMessage(
+        event: AccessibilityEvent
+    ) {
+        val packageName = event.packageName?.toString().orEmpty()
+        val message = event.text
+            .joinToString(separator = " ") { text ->
+                text?.toString().orEmpty()
+            }
+            .trim()
+        if (
+            AmapTransientMessagePolicy.isRateLimitEvidence(
+                packageName = packageName,
+                message = message
+            )
+        ) {
+            commandWorker.onAmapRateLimitDetected(message)
+        }
     }
 
     // 记录系统中断但不私自推进领域事务。

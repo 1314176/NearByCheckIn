@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 06:06
+// @Author: MrWu
+// @File: MapUiUnknownDiagnostics.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 internal data class MapUiLabelDiagnosticTarget(

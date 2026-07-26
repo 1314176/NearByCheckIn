@@ -1,3 +1,9 @@
+// @Time: 2026/07/26 23:09
+// @Author: MrWu
+// @File: MapUiGestureFallbackExecutor.kt
+// @Software: Android Studio
+
+
 package com.wu.nearbycheckin.platform.maps
 
 object MapUiGestureFallbackExecutor {
@@ -17,9 +23,9 @@ object MapUiGestureFallbackExecutor {
         return AccessibilityClickResult(
             success = submitted,
             message = if (submitted) {
-                "语义边界手势已提交"
+                "语义边界手势已提交：(${target.x},${target.y})"
             } else {
-                "语义边界手势提交失败"
+                "语义边界手势提交失败：(${target.x},${target.y})"
             }
         )
     }
