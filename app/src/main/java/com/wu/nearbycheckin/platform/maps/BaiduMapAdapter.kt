@@ -114,14 +114,23 @@ object BaiduMapAdapter {
     // 执行百度 Profile 返回的单个动作。
     fun execute(
         rootNode: AccessibilityNodeInfo?,
-        action: MapUiAction
+        action: MapUiAction,
+        appVersion: String,
+        gestureTap: (Int, Int) -> Boolean
     ): AccessibilityClickResult {
         return AccessibilityNodeActions.clickFirstMatchingLabel(
             rootNode = rootNode,
             labels = MapUiActionLabels.forProvider(
                 MapProvider.BAIDU,
                 action
-            )
+            ),
+            gestureTap = if (
+                appVersion == BaiduUiProfile.supportedAppVersion
+            ) {
+                gestureTap
+            } else {
+                null
+            }
         )
     }
 

@@ -1,6 +1,5 @@
 package com.wu.nearbycheckin.platform.maps
 
-import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
 object MapUiSnapshotCollector {
@@ -124,19 +123,6 @@ object MapUiSnapshotCollector {
                 emptyList()
             }
         }.toSet()
-    }
-
-    // 把节点屏幕边界转换为纯 Kotlin 边界。
-    private fun AccessibilityNodeInfo.toMapUiBounds(): MapUiBounds {
-        val rect = Rect().also { bounds ->
-            getBoundsInScreen(bounds)
-        }
-        return MapUiBounds(
-            left = rect.left,
-            top = rect.top,
-            right = rect.right,
-            bottom = rect.bottom
-        )
     }
 
     // 在快照采集边界内汇总目标标签且不保留原始节点内容。

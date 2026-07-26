@@ -14,17 +14,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 
 /**
- * 保存一次无障碍节点点击结果。
- *
- * @property success 点击是否成功执行。
- * @property message 点击结果或失败原因。
- */
-data class AccessibilityClickResult(
-    val success: Boolean,
-    val message: String
-)
-
-/**
  * 提供基于可访问节点文本的确定性点击能力，不使用屏幕坐标盲点。
  */
 object AccessibilityNodeActions {
@@ -38,7 +27,8 @@ object AccessibilityNodeActions {
      */
     fun clickFirstMatchingLabel(
         rootNode: AccessibilityNodeInfo?,
-        labels: List<String>
+        labels: List<String>,
+        gestureTap: ((Int, Int) -> Boolean)? = null
     ): AccessibilityClickResult {
         if (rootNode == null) {
             return AccessibilityClickResult(
@@ -63,22 +53,48 @@ object AccessibilityNodeActions {
 
         val clickableNode = matchingNodes.firstNotNullOfOrNull { node ->
             findClickableNode(node)
-        } ?: return AccessibilityClickResult(
-            success = false,
-            message = "节点不可点击：${labels.joinToString(separator = "/")}"
-        )
-
-        val clicked = clickableNode.performAction(
-            AccessibilityNodeInfo.ACTION_CLICK
-        )
-
-        return AccessibilityClickResult(
-            success = clicked,
-            message = if (clicked) {
-                "已点击节点：${labels.joinToString(separator = "/")}"
-            } else {
-                "节点点击失败：${labels.joinToString(separator = "/")}"
+        }
+        if (clickableNode != null) {
+            val clicked = clickableNode.performAction(
+                AccessibilityNodeInfo.ACTION_CLICK
+            )
+            if (clicked) {
+                return AccessibilityClickResult(
+                    success = true,
+                    message =
+                        "已点击节点：" +
+                                labels.joinToString(separator = "/")
+                )
             }
+            if (gestureTap == null) {
+                return AccessibilityClickResult(
+                    success = false,
+                    message =
+                        "节点点击失败：" +
+                                labels.joinToString(separator = "/")
+                )
+            }
+        }
+        if (gestureTap == null) {
+            return AccessibilityClickResult(
+                success = false,
+                message =
+                    "节点不可点击：${labels.joinToString(separator = "/")}"
+            )
+        }
+        val selection = MapUiGestureTargetPolicy.select(
+            candidates = matchingNodes.map { node ->
+                MapUiGestureCandidate(
+                    enabled = node.isEnabled,
+                    visible = node.isVisibleToUser,
+                    bounds = node.toMapUiBounds()
+                )
+            },
+            windowBounds = rootNode.toMapUiBounds()
+        )
+        return MapUiGestureFallbackExecutor.execute(
+            selection = selection,
+            tap = gestureTap
         )
     }
 

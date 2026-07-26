@@ -42,6 +42,8 @@ class DualMapCommandWorker(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resultProbe = MapOperationResultProbe(service)
+    private val gestureTapDispatcher =
+        AccessibilityGestureTapDispatcher(service)
     private val executionPolicy = MapUiExecutionPolicy()
     private val windowRecoveryPolicy =
         MapWindowRecoveryPolicy()
@@ -250,7 +252,8 @@ class DualMapCommandWorker(
 
         val clickResult = command.provider.execute(
             rootNode = rootNode,
-            action = action
+            action = action,
+            appVersion = currentAppVersion
         )
         val actionEvidence = appendBoundedWorkerEvidence(
             structuredEvidence = profileEvidence,
@@ -389,10 +392,16 @@ class DualMapCommandWorker(
     // 通过地图服务商 Adapter 执行 Profile 返回的单个动作。
     private fun MapProvider.execute(
         rootNode: AccessibilityNodeInfo?,
-        action: MapUiAction
+        action: MapUiAction,
+        appVersion: String
     ) = when (this) {
         MapProvider.BAIDU ->
-            BaiduMapAdapter.execute(rootNode, action)
+            BaiduMapAdapter.execute(
+                rootNode = rootNode,
+                action = action,
+                appVersion = appVersion,
+                gestureTap = gestureTapDispatcher::tap
+            )
         MapProvider.AMAP ->
             AmapMapAdapter.execute(rootNode, action)
     }
