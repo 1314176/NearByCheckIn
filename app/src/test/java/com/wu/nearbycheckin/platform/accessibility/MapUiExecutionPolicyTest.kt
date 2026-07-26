@@ -185,6 +185,20 @@ class MapUiExecutionPolicyTest {
         )
     }
 
+    // 验证陈旧频率限制页按未知页重复上限停止。
+    @Test
+    fun countsRateLimitedPageAsRepeatedUnknown() {
+        assertEquals(
+            3,
+            policy.repeatedUnknownCountFor(
+                page = MapUiPage.RATE_LIMITED,
+                fingerprint = "rate-limited",
+                lastFingerprint = "rate-limited",
+                repeatedUnknownCount = 2
+            )
+        )
+    }
+
     // 验证等待不计动作而成功点击增加一次动作。
     @Test
     fun countsOnlySuccessfulClickableActions() {

@@ -56,7 +56,10 @@ class MapUiExecutionPolicy(
         lastFingerprint: String,
         repeatedUnknownCount: Int
     ): Int {
-        if (page != MapUiPage.UNKNOWN) {
+        if (
+            page != MapUiPage.UNKNOWN &&
+            page != MapUiPage.RATE_LIMITED
+        ) {
             return 0
         }
         return if (
