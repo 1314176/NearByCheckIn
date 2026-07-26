@@ -109,7 +109,7 @@ interface ProviderUiProfile {
 }
 
 // 匹配精确标签或无障碍描述中的按钮后缀。
-private fun String.matchesUiLabel(label: String): Boolean {
+internal fun String.matchesUiLabel(label: String): Boolean {
     return this == label ||
             startsWith("$label,") ||
             startsWith("$label，")

@@ -23,9 +23,12 @@ import com.wu.nearbycheckin.platform.maps.BaiduMapAdapter
 import com.wu.nearbycheckin.platform.maps.BaiduUiProfile
 import com.wu.nearbycheckin.platform.maps.MapUiAction
 import com.wu.nearbycheckin.platform.maps.MapUiDecision
+import com.wu.nearbycheckin.platform.maps.MapUiLabelDiagnosticTarget
 import com.wu.nearbycheckin.platform.maps.MapUiPage
 import com.wu.nearbycheckin.platform.maps.MapUiSnapshot
+import com.wu.nearbycheckin.platform.maps.MapUiSnapshotCollector
 import com.wu.nearbycheckin.platform.maps.ProviderUiProfile
+import com.wu.nearbycheckin.platform.maps.formatMapUiLabelDiagnostics
 
 
 /**
@@ -188,12 +191,19 @@ class DualMapCommandWorker(
                 lastFingerprint = lastFingerprint,
                 repeatedUnknownCount = repeatedUnknownCount
             )
-        val profileEvidence = buildProfileEvidence(
+        val baseProfileEvidence = buildProfileEvidence(
             provider = command.provider,
             snapshot = snapshot,
             profile = profile,
             decision = decision
         )
+        val profileEvidence =
+            appendBaiduUnknownDiagnostics(
+                command = command,
+                rootNode = rootNode,
+                decision = decision,
+                profileEvidence = baseProfileEvidence
+            )
         reportStructuredStatus(
             event = "页面识别",
             structuredEvidence = profileEvidence
@@ -415,6 +425,40 @@ class DualMapCommandWorker(
         )
     }
 
+    // 仅为百度 UNKNOWN 页面追加受限的标签动作能力诊断。
+    private fun appendBaiduUnknownDiagnostics(
+        command: MapCommand,
+        rootNode: AccessibilityNodeInfo,
+        decision: MapUiDecision,
+        profileEvidence: String
+    ): String {
+        if (
+            command.provider != MapProvider.BAIDU ||
+            decision.page != MapUiPage.UNKNOWN
+        ) {
+            return profileEvidence
+        }
+        val diagnosticEvidence = formatMapUiLabelDiagnostics(
+            MapUiSnapshotCollector.collectLabelDiagnostics(
+                rootNode = rootNode,
+                targets = BAIDU_UNKNOWN_DIAGNOSTIC_TARGETS
+            )
+        )
+        reportStructuredStatus(
+            event = "UNKNOWN诊断",
+            structuredEvidence = appendBoundedWorkerEvidence(
+                structuredEvidence = "",
+                key = "labelDiagnostics",
+                value = diagnosticEvidence
+            )
+        )
+        return appendBoundedWorkerEvidence(
+            structuredEvidence = profileEvidence,
+            key = "labelDiagnostics",
+            value = diagnosticEvidence
+        )
+    }
+
     // 追加旧 Probe 只读证据但不使用其状态覆盖 Profile 终态。
     private fun appendProbeEvidence(
         profileEvidence: String,
@@ -542,5 +586,15 @@ class DualMapCommandWorker(
         const val COMMAND_POLL_INTERVAL_MILLIS = 500L
         const val MAP_OPERATION_INITIAL_DELAY_MILLIS = 4_000L
         const val MAP_OPERATION_STEP_DELAY_MILLIS = 1_500L
+        val BAIDU_UNKNOWN_DIAGNOSTIC_TARGETS = listOf(
+            MapUiLabelDiagnosticTarget(
+                key = "mine",
+                label = "我的"
+            ),
+            MapUiLabelDiagnosticTarget(
+                key = "home",
+                label = "首页"
+            )
+        )
     }
 }
