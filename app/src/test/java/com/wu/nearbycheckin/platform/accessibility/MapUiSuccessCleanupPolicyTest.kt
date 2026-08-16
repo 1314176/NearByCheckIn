@@ -18,9 +18,9 @@ import org.junit.Test
 
 class MapUiSuccessCleanupPolicyTest {
 
-    // 验证只有百度成功页“完成”动作属于最佳努力清理。
+    // 验证百度和高德成功页的完成动作都属于最佳努力清理。
     @Test
-    fun selectsOnlyBaiduDoneAction() {
+    fun selectsProviderDoneActions() {
         assertTrue(
             MapUiSuccessCleanupPolicy.shouldExecute(
                 provider = MapProvider.BAIDU,
@@ -28,10 +28,17 @@ class MapUiSuccessCleanupPolicyTest {
                 action = MapUiAction.CLICK_DONE
             )
         )
-        assertFalse(
+        assertTrue(
             MapUiSuccessCleanupPolicy.shouldExecute(
                 provider = MapProvider.AMAP,
                 page = MapUiPage.SUCCESS,
+                action = MapUiAction.CLICK_DONE
+            )
+        )
+        assertFalse(
+            MapUiSuccessCleanupPolicy.shouldExecute(
+                provider = MapProvider.AMAP,
+                page = MapUiPage.CHECK_IN,
                 action = MapUiAction.CLICK_DONE
             )
         )

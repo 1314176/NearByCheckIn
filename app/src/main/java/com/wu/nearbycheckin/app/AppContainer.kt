@@ -11,8 +11,12 @@ import android.content.Context
 
 import com.wu.nearbycheckin.core.common.time.SystemAppClock
 import com.wu.nearbycheckin.core.domain.coordinator.CheckInCoordinator
+import com.wu.nearbycheckin.core.domain.coordinator.ProviderAutomationCoordinator
 import com.wu.nearbycheckin.core.domain.evaluator.CandidateEvaluator
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.core.domain.plugin.MapAutomationPluginEntry
+import com.wu.nearbycheckin.core.domain.plugin.MapAutomationPluginRegistry
+import com.wu.nearbycheckin.core.domain.plugin.PluginAvailability
 import com.wu.nearbycheckin.core.domain.statemachine.DualMapStateMachine
 import com.wu.nearbycheckin.core.domain.usecase.ClearRecordsUseCase
 import com.wu.nearbycheckin.core.domain.usecase.QueryRecordsUseCase
@@ -22,6 +26,8 @@ import com.wu.nearbycheckin.core.domain.usecase.SubmitCandidateUseCase
 import com.wu.nearbycheckin.data.repository.LegacyCheckInDataMigrator
 import com.wu.nearbycheckin.data.repository.SharedPreferencesCheckInTransactionRepository
 import com.wu.nearbycheckin.platform.cruise.AndroidCruisePlatformGateway
+import com.wu.nearbycheckin.platform.maps.BaiduCheckInPlugin
+import com.wu.nearbycheckin.core.model.MapProvider
 
 
 /**
@@ -47,6 +53,24 @@ class AppContainer(
         candidateEvaluator = CandidateEvaluator(),
         stateMachine = DualMapStateMachine(),
         clock = appClock
+    )
+    val providerAutomationCoordinator = ProviderAutomationCoordinator(
+        repository = transactionRepository,
+        clock = appClock
+    )
+    val mapAutomationPluginRegistry = MapAutomationPluginRegistry(
+        listOf(
+            MapAutomationPluginEntry(
+                provider = MapProvider.BAIDU,
+                availability = PluginAvailability.ENABLED,
+                plugin = BaiduCheckInPlugin()
+            ),
+            MapAutomationPluginEntry(
+                provider = MapProvider.AMAP,
+                availability = PluginAvailability.LEGACY,
+                reason = "百度高速连续打卡验收完成后再启用"
+            )
+        )
     )
     val startCruiseUseCase = StartCruiseUseCase(
         platformGateway = platformGateway,

@@ -34,5 +34,7 @@ data class CheckInRecord(
     val longitude: Double,
     val distanceMeters: Int,
     val stayDurationMillis: Long,
-    val checkInTimeMillis: Long
+    val checkInTimeMillis: Long,
+    val provider: MapProvider? = null,
+    val evidenceSummary: String = ""
 )

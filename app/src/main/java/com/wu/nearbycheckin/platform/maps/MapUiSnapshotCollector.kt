@@ -259,6 +259,6 @@ object MapUiSnapshotCollector {
         val gestureCandidate: MapUiGestureCandidate
     )
 
-    private const val MAX_DEPTH = 12
+    private const val MAX_DEPTH = 32
     private const val MAX_NODE_COUNT = 300
 }

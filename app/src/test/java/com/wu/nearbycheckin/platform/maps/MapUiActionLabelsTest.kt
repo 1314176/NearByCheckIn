@@ -53,7 +53,14 @@ class MapUiActionLabelsTest {
     @Test
     fun mapsAmapActionsToVerifiedLabels() {
         assertEquals(
-            listOf("打卡点"),
+            listOf("足迹"),
+            MapUiActionLabels.forProvider(
+                MapProvider.AMAP,
+                MapUiAction.CLICK_FOOTPRINT
+            )
+        )
+        assertEquals(
+            listOf("打卡点", "地点"),
             MapUiActionLabels.forProvider(
                 MapProvider.AMAP,
                 MapUiAction.CLICK_CHECK_IN_POINT
@@ -68,9 +75,9 @@ class MapUiActionLabelsTest {
         )
     }
 
-    // 验证“完成”只属于百度成功页清理动作。
+    // 验证百度“完成”和高德“收下”分别映射成功页清理动作。
     @Test
-    fun mapsDoneOnlyToBaiduCleanup() {
+    fun mapsProviderSuccessCleanupLabels() {
         assertEquals(
             listOf("完成"),
             MapUiActionLabels.forProvider(
@@ -79,7 +86,7 @@ class MapUiActionLabelsTest {
             )
         )
         assertEquals(
-            emptyList<String>(),
+            listOf("收下"),
             MapUiActionLabels.forProvider(
                 MapProvider.AMAP,
                 MapUiAction.CLICK_DONE

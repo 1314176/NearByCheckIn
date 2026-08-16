@@ -22,6 +22,8 @@ import com.wu.nearbycheckin.core.model.DualMapTransactionStatus
 import com.wu.nearbycheckin.core.model.MapCommand
 import com.wu.nearbycheckin.core.model.MapCommandStatus
 import com.wu.nearbycheckin.core.model.MapOperationResult
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.core.model.NearbyPlaceCandidate
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 import com.wu.nearbycheckin.core.domain.statemachine.DualMapEvent
@@ -37,7 +39,7 @@ data class CandidateSubmissionResult(
 )
 
 /**
- * 串行协调候选、事务、状态机、命令队列和恢复流程。
+ * 协调候选、并行 Provider 队列、状态机和恢复流程。
  */
 class CheckInCoordinator(
     private val repository: CheckInTransactionRepository,
@@ -59,7 +61,7 @@ class CheckInCoordinator(
             val existingSession = snapshot.session
             if (existingSession?.status == AutomationSessionStatus.RUNNING) {
                 session = existingSession
-                return@updateSnapshot snapshotReducer.startNextIfPossible(
+                return@updateSnapshot prepareRunnableSnapshot(
                     snapshot = snapshot,
                     nowMillis = nowMillis
                 )
@@ -72,7 +74,7 @@ class CheckInCoordinator(
                 status = AutomationSessionStatus.RUNNING
             )
             session = newSession
-            snapshotReducer.startNextIfPossible(
+            prepareRunnableSnapshot(
                 snapshot = snapshot.copy(
                     session = newSession,
                     automationStatus = "巡航会话已启动"
@@ -187,7 +189,7 @@ class CheckInCoordinator(
                 transactionId = transaction.transactionId
             )
 
-            snapshotReducer.startNextIfPossible(
+            prepareRunnableSnapshot(
                 snapshot = snapshotWithObservation.copy(
                     session = session,
                     transactions = snapshotWithObservation.transactions +
@@ -203,12 +205,14 @@ class CheckInCoordinator(
 
     // 在领取命令前推进已经到期的重试状态。
     fun claimNextCommand(
+        provider: MapProvider,
         workerId: String,
         leaseDurationMillis: Long = DEFAULT_COMMAND_LEASE_MILLIS
     ): MapCommand? = synchronized(coordinatorLock) {
         val nowMillis = clock.nowMillis()
         processDueRetry(nowMillis)
         repository.claimNextCommand(
+            provider = provider,
             workerId = workerId,
             nowMillis = nowMillis,
             leaseDurationMillis = leaseDurationMillis
@@ -270,10 +274,14 @@ class CheckInCoordinator(
                 transition = transition,
                 nowMillis = nowMillis
             )
+            updatedSnapshot = reconcileAmapRealLocations(
+                snapshot = updatedSnapshot,
+                nowMillis = nowMillis
+            )
             if (transition.newState.status in TERMINAL_STATUSES) {
                 updatedSnapshot =
-                    snapshotReducer.startNextIfPossible(
-                    snapshot = updatedSnapshot,
+                    prepareRunnableSnapshot(
+                        snapshot = updatedSnapshot,
                     nowMillis = nowMillis
                 )
             }
@@ -316,7 +324,7 @@ class CheckInCoordinator(
     // 在进程恢复后重新启动可执行的排队事务。
     fun resumePendingTransactions() = synchronized(coordinatorLock) {
         repository.updateSnapshot { snapshot ->
-            snapshotReducer.startNextIfPossible(
+            prepareRunnableSnapshot(
                 snapshot = snapshot,
                 nowMillis = clock.nowMillis()
             )
@@ -326,27 +334,180 @@ class CheckInCoordinator(
     // 推进当前已经到达退避时间的失败端。
     private fun processDueRetry(nowMillis: Long) {
         repository.updateSnapshot { snapshot ->
-            val transaction = snapshot.activeTransaction
-                ?: return@updateSnapshot snapshot
-            val transition = stateMachine.reduce(
-                state = transaction.state,
-                event = DualMapEvent.RetryDue(nowMillis)
-            )
-            if (transition.newState == transaction.state) {
-                snapshot
-            } else {
-                snapshotReducer.applyTransition(
-                    snapshot = snapshot,
-                    transaction = transaction,
-                    transition = transition,
-                    nowMillis = nowMillis
+            snapshot.transactions.fold(snapshot) {
+                    currentSnapshot, originalTransaction ->
+                val transaction = currentSnapshot.transactions
+                    .firstOrNull { item ->
+                        item.transactionId ==
+                                originalTransaction.transactionId
+                    } ?: return@fold currentSnapshot
+                val transition = stateMachine.reduce(
+                    state = transaction.state,
+                    event = DualMapEvent.RetryDue(nowMillis)
                 )
+                if (transition.newState == transaction.state) {
+                    currentSnapshot
+                } else {
+                    snapshotReducer.applyTransition(
+                        snapshot = currentSnapshot,
+                        transaction = transaction,
+                        transition = transition,
+                        nowMillis = nowMillis
+                    )
+                }
             }
         }
     }
 
+    // 启动全部排队事务并复用已经完成的高德真实位置结果。
+    private fun prepareRunnableSnapshot(
+        snapshot: AutomationSnapshot,
+        nowMillis: Long
+    ): AutomationSnapshot {
+        return reconcileAmapRealLocations(
+            snapshot = snapshotReducer.startNextIfPossible(
+                snapshot = snapshot,
+                nowMillis = nowMillis
+            ),
+            nowMillis = nowMillis
+        )
+    }
+
+    // 把高德领导事务终态传播到同一真实位置的其他活动事务。
+    private fun reconcileAmapRealLocations(
+        snapshot: AutomationSnapshot,
+        nowMillis: Long
+    ): AutomationSnapshot {
+        var updatedSnapshot = snapshot
+        val leaderIds = snapshot.transactions
+            .asSequence()
+            .filter { transaction ->
+                transaction.state.amapTerminal &&
+                        transaction.state.amapResult != null &&
+                        AmapRealLocationDeduplicationPolicy
+                            .isLocationLeader(
+                                snapshot = snapshot,
+                                transactionId = transaction.transactionId
+                            )
+            }
+            .sortedBy { transaction -> transaction.createdAtMillis }
+            .map { transaction -> transaction.transactionId }
+            .toList()
+        leaderIds.forEach { leaderId ->
+            val leader = updatedSnapshot.transactions.firstOrNull { item ->
+                item.transactionId == leaderId
+            } ?: return@forEach
+            val leaderResult = leader.state.amapResult ?: return@forEach
+            val followerIds = updatedSnapshot.transactions
+                .asSequence()
+                .filter { follower ->
+                    follower.transactionId != leader.transactionId &&
+                            follower.sessionId == leader.sessionId &&
+                            !follower.state.amapTerminal &&
+                            follower.state.status !in TERMINAL_STATUSES &&
+                            AmapRealLocationDeduplicationPolicy
+                                .isSameRealLocation(
+                                    leader.candidate,
+                                    follower.candidate
+                                )
+                }
+                .map { follower -> follower.transactionId }
+                .toList()
+            followerIds.forEach { followerId ->
+                updatedSnapshot = reuseAmapResult(
+                    snapshot = updatedSnapshot,
+                    followerId = followerId,
+                    leaderResult = leaderResult,
+                    nowMillis = nowMillis
+                )
+            }
+        }
+        return updatedSnapshot
+    }
+
+    // 关闭重复高德命令并将领导事务结果写入跟随事务。
+    private fun reuseAmapResult(
+        snapshot: AutomationSnapshot,
+        followerId: String,
+        leaderResult: MapOperationResult,
+        nowMillis: Long
+    ): AutomationSnapshot {
+        val follower = snapshot.transactions.firstOrNull { item ->
+            item.transactionId == followerId
+        } ?: return snapshot
+        val activeAmapCommands = snapshot.commands.filter { command ->
+            command.transactionId == followerId &&
+                    command.provider == MapProvider.AMAP &&
+                    command.status != MapCommandStatus.COMPLETED
+        }
+        val reusedStatus = if (leaderResult.status.isSuccessful()) {
+            MapOperationStatus.ALREADY_COMPLETED
+        } else {
+            leaderResult.status
+        }
+        val primaryCommandId = activeAmapCommands.firstOrNull()
+            ?.commandId
+            .orEmpty()
+        val reusedResult = leaderResult.copy(
+            status = reusedStatus,
+            completedAt = nowMillis,
+            attempts = follower.state.amapAttempts,
+            failureCode = if (reusedStatus.isSuccessful()) {
+                ""
+            } else {
+                AMAP_REAL_LOCATION_DUPLICATE_CODE
+            },
+            failureMessage = if (reusedStatus.isSuccessful()) {
+                "同一真实位置已完成高德打卡，跳过重复操作"
+            } else {
+                "同一真实位置的高德尝试已结束，跳过重复操作"
+            },
+            evidenceText = (
+                    leaderResult.evidenceText +
+                            "|dedupe=amap_real_location"
+                    ).take(MAX_REUSED_EVIDENCE_LENGTH),
+            commandId = primaryCommandId,
+            transactionId = followerId
+        )
+        val commands = snapshot.commands.map { command ->
+            if (command in activeAmapCommands) {
+                command.copy(
+                    status = MapCommandStatus.COMPLETED,
+                    completedAtMillis = nowMillis,
+                    result = reusedResult.copy(
+                        commandId = command.commandId
+                    )
+                )
+            } else {
+                command
+            }
+        }
+        val transition = stateMachine.reduce(
+            state = follower.state,
+            event = DualMapEvent.ProviderResultReused(
+                result = reusedResult,
+                nowMillis = nowMillis
+            )
+        )
+        return snapshotReducer.applyTransition(
+            snapshot = snapshot.copy(commands = commands),
+            transaction = follower,
+            transition = transition,
+            nowMillis = nowMillis
+        )
+    }
+
+    // 判断地图结果是否已满足该 Provider 的完成条件。
+    private fun MapOperationStatus.isSuccessful(): Boolean {
+        return this == MapOperationStatus.SUCCESS ||
+                this == MapOperationStatus.ALREADY_COMPLETED
+    }
+
     private companion object {
         const val DEFAULT_COMMAND_LEASE_MILLIS = 120_000L
+        const val AMAP_REAL_LOCATION_DUPLICATE_CODE =
+            "AMAP_REAL_LOCATION_DUPLICATE_SKIPPED"
+        const val MAX_REUSED_EVIDENCE_LENGTH = 2_000
 
         val TERMINAL_STATUSES = setOf(
             DualMapTransactionStatus.COMPLETED,

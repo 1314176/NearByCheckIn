@@ -8,7 +8,9 @@ package com.wu.nearbycheckin.platform.accessibility
 
 
 import android.accessibilityservice.AccessibilityService
+import android.os.Build
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 import com.wu.nearbycheckin.core.model.MapOperationStatus
 
@@ -76,6 +78,8 @@ internal fun resolveMapOperationProbeStatus(
     return when {
         ALREADY_COMPLETED_TEXT_MARKERS.any(text::contains) ->
             MapOperationProbeStatus.ALREADY_COMPLETED
+        hasAmapMemoryResultEvidence(text) ->
+            MapOperationProbeStatus.SUCCESS
         SUCCESS_TEXT_MARKERS.any(text::contains) ->
             MapOperationProbeStatus.SUCCESS
         BLOCKED_TEXT_MARKERS.any(text::contains) ->
@@ -86,6 +90,13 @@ internal fun resolveMapOperationProbeStatus(
             MapOperationProbeStatus.FAILED
         else -> MapOperationProbeStatus.UNKNOWN
     }
+}
+
+// 通过经纬度与日期组合确认高德短暂出现的“添加回忆”结果层。
+private fun hasAmapMemoryResultEvidence(text: String): Boolean {
+    return AMAP_LATITUDE_REGEX.containsMatchIn(text) &&
+            AMAP_LONGITUDE_REGEX.containsMatchIn(text) &&
+            AMAP_DATE_REGEX.containsMatchIn(text)
 }
 
 // 清理证据值中的换行和结构化字段分隔符并限制长度。
@@ -124,25 +135,45 @@ class MapOperationResultProbe(
     fun findWindowRootNode(
         packageName: String
     ): AccessibilityNodeInfo? {
-        service.windows.orEmpty().forEach { window ->
-            val rootNode = window.root ?: return@forEach
-            if (
-                containsPackageName(
-                    node = rootNode,
-                    packageName = packageName,
-                    depth = 0
-                )
-            ) {
-                return rootNode
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            service.clearCache()
         }
-        return service.rootInActiveWindow?.takeIf { rootNode ->
+        val activeRootNode = service.rootInActiveWindow
+        activeRootNode?.refresh()
+        if (
             containsPackageName(
-                node = rootNode,
+                node = activeRootNode,
                 packageName = packageName,
                 depth = 0
             )
+        ) {
+            return activeRootNode
         }
+
+        service.windows.orEmpty()
+            .sortedWith(
+                compareByDescending<AccessibilityWindowInfo> { window ->
+                    window.isActive
+                }.thenByDescending { window ->
+                    window.isFocused
+                }.thenByDescending { window ->
+                    window.layer
+                }
+            )
+            .forEach { window ->
+                val rootNode = window.root ?: return@forEach
+                rootNode.refresh()
+                if (
+                    containsPackageName(
+                        node = rootNode,
+                        packageName = packageName,
+                        depth = 0
+                    )
+                ) {
+                    return rootNode
+                }
+            }
+        return null
     }
 
     // 采集当前页面文本并解析地图端操作状态。
@@ -222,7 +253,7 @@ class MapOperationResultProbe(
 
     private companion object {
         const val PACKAGE_SCAN_DEPTH = 4
-        const val TEXT_SCAN_DEPTH = 12
+        const val TEXT_SCAN_DEPTH = 32
         const val TEXT_MAX_COUNT = 120
     }
 }
@@ -237,6 +268,9 @@ private val SUCCESS_TEXT_MARKERS = listOf(
     "打卡成功",
     "签到成功"
 )
+private val AMAP_LATITUDE_REGEX = Regex("\\d{1,2}(?:\\.\\d+)?°N")
+private val AMAP_LONGITUDE_REGEX = Regex("\\d{1,3}(?:\\.\\d+)?°E")
+private val AMAP_DATE_REGEX = Regex("\\d{4}[./-]\\d{1,2}[./-]\\d{1,2}")
 private val ALREADY_COMPLETED_TEXT_MARKERS = listOf(
     "今日已打卡",
     "当前地点已打卡",

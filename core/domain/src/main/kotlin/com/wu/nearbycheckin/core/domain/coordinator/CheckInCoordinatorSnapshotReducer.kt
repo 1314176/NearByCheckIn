@@ -32,30 +32,33 @@ internal class CheckInCoordinatorSnapshotReducer(
     private val stateMachine: DualMapStateMachine
 ) {
 
-    // 在没有活动事务时启动最早入队的事务。
+    // 将当前会话内全部排队事务转换为双 Provider 独立命令。
     fun startNextIfPossible(
         snapshot: AutomationSnapshot,
         nowMillis: Long
     ): AutomationSnapshot {
         if (
-            snapshot.activeTransaction != null ||
             snapshot.session?.status != AutomationSessionStatus.RUNNING
         ) {
             return snapshot
         }
-
-        val transaction = snapshot.queuedTransactions.firstOrNull()
-            ?: return snapshot
-        val transition = stateMachine.reduce(
-            state = transaction.state,
-            event = DualMapEvent.ExecutionStarted(nowMillis)
-        )
-        return applyTransition(
-            snapshot = snapshot,
-            transaction = transaction,
-            transition = transition,
-            nowMillis = nowMillis
-        )
+        return snapshot.queuedTransactions.fold(snapshot) {
+                currentSnapshot, queuedTransaction ->
+            val transaction = currentSnapshot.transactions
+                .firstOrNull { item ->
+                    item.transactionId == queuedTransaction.transactionId
+                } ?: return@fold currentSnapshot
+            val transition = stateMachine.reduce(
+                state = transaction.state,
+                event = DualMapEvent.ExecutionStarted(nowMillis)
+            )
+            applyTransition(
+                snapshot = currentSnapshot,
+                transaction = transaction,
+                transition = transition,
+                nowMillis = nowMillis
+            )
+        }
     }
 
     // 把纯状态机输出转换为持久化事务和命令。
@@ -217,6 +220,8 @@ internal class CheckInCoordinatorSnapshotReducer(
         return when (transition.newState.status) {
             DualMapTransactionStatus.QUEUED ->
                 "等待执行：$placeName"
+            DualMapTransactionStatus.RUNNING ->
+                "百度、高德已独立入队：$placeName"
             DualMapTransactionStatus.BAIDU_RUNNING ->
                 "正在执行百度地图：$placeName"
             DualMapTransactionStatus.AMAP_RUNNING ->

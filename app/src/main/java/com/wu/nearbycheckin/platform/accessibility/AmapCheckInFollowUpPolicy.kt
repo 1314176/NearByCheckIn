@@ -11,53 +11,30 @@ import com.wu.nearbycheckin.platform.maps.MapUiPage
 
 enum class AmapCheckInStage {
     NONE,
-    WAITING_SECOND_CLICK,
     SECOND_CLICK_SUBMITTED
 }
 
 object AmapCheckInFollowUpPolicy {
 
-    // 返回一次成功“开始打卡”提交后的高德流程阶段。
-    fun nextStageAfterSuccessfulCheckIn(
-        currentStage: AmapCheckInStage
-    ): AmapCheckInStage {
-        return when (currentStage) {
-            AmapCheckInStage.NONE ->
-                AmapCheckInStage.WAITING_SECOND_CLICK
-            AmapCheckInStage.WAITING_SECOND_CLICK,
-            AmapCheckInStage.SECOND_CLICK_SUBMITTED ->
-                AmapCheckInStage.SECOND_CLICK_SUBMITTED
-        }
+    // 原子双击序列提交后直接进入结果识别阶段。
+    fun stageAfterAtomicDoubleClick(): AmapCheckInStage {
+        return AmapCheckInStage.SECOND_CLICK_SUBMITTED
     }
 
-    // 在等待第二次点击时返回固定两秒延迟。
-    fun delayBeforeNextLoopMillis(
-        stage: AmapCheckInStage,
-        defaultDelayMillis: Long
-    ): Long {
-        return if (
-            stage == AmapCheckInStage.WAITING_SECOND_CLICK
-        ) {
-            SECOND_CLICK_DELAY_MILLIS
-        } else {
-            defaultDelayMillis
-        }
-    }
-
-    // 仅在第二次点击已提交后接受频率限制成功证据。
+    // 首次打卡提交后即可接受频率限制证据，覆盖异步手势与提示事件竞态。
     fun isSuccessfulRateLimit(
         page: MapUiPage,
         stage: AmapCheckInStage
     ): Boolean {
         return page == MapUiPage.RATE_LIMITED &&
-                stage == AmapCheckInStage.SECOND_CLICK_SUBMITTED
+                stage != AmapCheckInStage.NONE
     }
 
     // 判断当前阶段是否仍允许提交“开始打卡”动作。
     fun shouldExecuteCheckIn(
         stage: AmapCheckInStage
     ): Boolean {
-        return stage != AmapCheckInStage.SECOND_CLICK_SUBMITTED
+        return stage == AmapCheckInStage.NONE
     }
 
     // 把第二次点击后未变化的打卡页纳入重复未知页保护。

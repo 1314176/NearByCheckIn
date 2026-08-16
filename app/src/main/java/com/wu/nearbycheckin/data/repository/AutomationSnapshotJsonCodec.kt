@@ -61,6 +61,30 @@ internal object AutomationSnapshotJsonCodec {
                 COMPLETED_PLACE_KEYS_KEY,
                 snapshot.completedPlaceKeys.toStringJsonArray()
             )
+            put(
+                PROVIDER_CANDIDATES_KEY,
+                ProviderAutomationJsonCodec.encodeCandidates(
+                    snapshot.providerCandidates
+                )
+            )
+            put(
+                PROVIDER_TASKS_KEY,
+                ProviderAutomationJsonCodec.encodeTasks(
+                    snapshot.providerTasks
+                )
+            )
+            put(
+                PROVIDER_COMPLETED_KEYS_KEY,
+                ProviderAutomationJsonCodec.encodeCompletedKeys(
+                    snapshot.providerCompletedKeys
+                )
+            )
+            put(
+                PROVIDER_RUNTIME_KEY,
+                ProviderAutomationJsonCodec.encodeRuntime(
+                    snapshot.providerRuntime
+                )
+            )
             put(DIAGNOSTICS_KEY, snapshot.diagnostics.toJsonObject())
             put(AUTOMATION_STATUS_KEY, snapshot.automationStatus)
             put(
@@ -79,10 +103,7 @@ internal object AutomationSnapshotJsonCodec {
         return try {
             val root = JSONObject(json)
             AutomationSnapshot(
-                schemaVersion = root.optInt(
-                    SCHEMA_VERSION_KEY,
-                    AutomationSnapshot.CURRENT_SCHEMA_VERSION
-                ),
+                schemaVersion = AutomationSnapshot.CURRENT_SCHEMA_VERSION,
                 session = root.optJSONObject(SESSION_KEY)
                     ?.toAutomationSession(),
                 candidates = root.optJSONArray(CANDIDATES_KEY)
@@ -99,6 +120,20 @@ internal object AutomationSnapshotJsonCodec {
                 completedPlaceKeys =
                     root.optJSONArray(COMPLETED_PLACE_KEYS_KEY)
                         .toStringSet(),
+                providerCandidates =
+                    ProviderAutomationJsonCodec.decodeCandidates(
+                        root.optJSONArray(PROVIDER_CANDIDATES_KEY)
+                    ),
+                providerTasks = ProviderAutomationJsonCodec.decodeTasks(
+                    root.optJSONArray(PROVIDER_TASKS_KEY)
+                ),
+                providerCompletedKeys =
+                    ProviderAutomationJsonCodec.decodeCompletedKeys(
+                        root.optJSONArray(PROVIDER_COMPLETED_KEYS_KEY)
+                    ),
+                providerRuntime = ProviderAutomationJsonCodec.decodeRuntime(
+                    root.optJSONObject(PROVIDER_RUNTIME_KEY)
+                ),
                 diagnostics = root.optJSONObject(DIAGNOSTICS_KEY)
                     ?.toAccessibilityDiagnostics()
                     ?: AccessibilityDiagnostics(),
@@ -170,6 +205,8 @@ internal object AutomationSnapshotJsonCodec {
             put(LOCATION_TIME_MILLIS_KEY, locationTimeMillis)
             put(FIRST_SEEN_AT_MILLIS_KEY, firstSeenAtMillis)
             put(OBSERVED_AT_MILLIS_KEY, observedAtMillis)
+            put(DEVICE_LATITUDE_KEY, deviceLatitude.takeIf { it.isFinite() } ?: 0.0)
+            put(DEVICE_LONGITUDE_KEY, deviceLongitude.takeIf { it.isFinite() } ?: 0.0)
         }
     }
 
@@ -202,7 +239,11 @@ internal object AutomationSnapshotJsonCodec {
             speedKmh = optDouble(SPEED_KMH_KEY).toFloat(),
             locationTimeMillis = optLong(LOCATION_TIME_MILLIS_KEY),
             firstSeenAtMillis = optLong(FIRST_SEEN_AT_MILLIS_KEY),
-            observedAtMillis = optLong(OBSERVED_AT_MILLIS_KEY)
+            observedAtMillis = optLong(OBSERVED_AT_MILLIS_KEY),
+            deviceLatitude = optDouble(DEVICE_LATITUDE_KEY, 0.0)
+                .takeIf { it.isFinite() } ?: 0.0,
+            deviceLongitude = optDouble(DEVICE_LONGITUDE_KEY, 0.0)
+                .takeIf { it.isFinite() } ?: 0.0
         )
     }
 
@@ -271,6 +312,8 @@ internal object AutomationSnapshotJsonCodec {
             )
             put(BAIDU_ATTEMPTS_KEY, baiduAttempts)
             put(AMAP_ATTEMPTS_KEY, amapAttempts)
+            put(BAIDU_TERMINAL_KEY, baiduTerminal)
+            put(AMAP_TERMINAL_KEY, amapTerminal)
             put(RETRY_PROVIDER_KEY, retryProvider?.name.orEmpty())
             put(RETRY_AT_MILLIS_KEY, retryAtMillis)
             put(BLOCKED_REASON_KEY, blockedReason)
@@ -282,14 +325,26 @@ internal object AutomationSnapshotJsonCodec {
         val status = enumValueOrNull<DualMapTransactionStatus>(
             optString(STATUS_KEY)
         ) ?: return null
+        val baiduResult = optJSONObject(BAIDU_RESULT_KEY)
+            ?.toMapOperationResult()
+        val amapResult = optJSONObject(AMAP_RESULT_KEY)
+            ?.toMapOperationResult()
         return DualMapState(
             status = status,
-            baiduResult = optJSONObject(BAIDU_RESULT_KEY)
-                ?.toMapOperationResult(),
-            amapResult = optJSONObject(AMAP_RESULT_KEY)
-                ?.toMapOperationResult(),
+            baiduResult = baiduResult,
+            amapResult = amapResult,
             baiduAttempts = optInt(BAIDU_ATTEMPTS_KEY),
             amapAttempts = optInt(AMAP_ATTEMPTS_KEY),
+            baiduTerminal = if (has(BAIDU_TERMINAL_KEY)) {
+                optBoolean(BAIDU_TERMINAL_KEY)
+            } else {
+                baiduResult?.status in SUCCESSFUL_OPERATION_STATUSES
+            },
+            amapTerminal = if (has(AMAP_TERMINAL_KEY)) {
+                optBoolean(AMAP_TERMINAL_KEY)
+            } else {
+                amapResult?.status in SUCCESSFUL_OPERATION_STATUSES
+            },
             retryProvider = enumValueOrNull<MapProvider>(
                 optString(RETRY_PROVIDER_KEY)
             ),
@@ -427,6 +482,8 @@ internal object AutomationSnapshotJsonCodec {
             put(DISTANCE_METERS_KEY, distanceMeters)
             put(STAY_DURATION_MILLIS_KEY, stayDurationMillis)
             put(CHECK_IN_TIME_MILLIS_KEY, checkInTimeMillis)
+            put(PROVIDER_KEY, provider?.name ?: "")
+            put(EVIDENCE_SUMMARY_KEY, evidenceSummary)
         }
     }
 
@@ -453,7 +510,12 @@ internal object AutomationSnapshotJsonCodec {
             longitude = optDouble(LONGITUDE_KEY),
             distanceMeters = optInt(DISTANCE_METERS_KEY),
             stayDurationMillis = optLong(STAY_DURATION_MILLIS_KEY),
-            checkInTimeMillis = optLong(CHECK_IN_TIME_MILLIS_KEY)
+            checkInTimeMillis = optLong(CHECK_IN_TIME_MILLIS_KEY),
+            provider = optString(PROVIDER_KEY).takeIf(String::isNotBlank)
+                ?.let { value ->
+                    runCatching { MapProvider.valueOf(value) }.getOrNull()
+                },
+            evidenceSummary = optString(EVIDENCE_SUMMARY_KEY)
         )
     }
 
@@ -663,6 +725,11 @@ internal object AutomationSnapshotJsonCodec {
     private const val RECORDS_KEY = "records"
     private const val LEGACY_DUAL_MAP_RECORDS_KEY = "legacyDualMapRecords"
     private const val COMPLETED_PLACE_KEYS_KEY = "completedPlaceKeys"
+    private const val PROVIDER_CANDIDATES_KEY = "providerCandidates"
+    private const val PROVIDER_TASKS_KEY = "providerTasks"
+    private const val PROVIDER_COMPLETED_KEYS_KEY =
+        "providerCompletedKeys"
+    private const val PROVIDER_RUNTIME_KEY = "providerRuntime"
     private const val DIAGNOSTICS_KEY = "diagnostics"
     private const val AUTOMATION_STATUS_KEY = "automationStatus"
     private const val AUTO_SPLIT_REQUESTED_AT_MILLIS_KEY =
@@ -683,6 +750,8 @@ internal object AutomationSnapshotJsonCodec {
     private const val CATEGORY_KEY = "category"
     private const val LATITUDE_KEY = "latitude"
     private const val LONGITUDE_KEY = "longitude"
+    private const val DEVICE_LATITUDE_KEY = "deviceLatitude"
+    private const val DEVICE_LONGITUDE_KEY = "deviceLongitude"
     private const val DISTANCE_METERS_KEY = "distanceMeters"
     private const val LOCATION_ACCURACY_METERS_KEY =
         "locationAccuracyMeters"
@@ -699,6 +768,8 @@ internal object AutomationSnapshotJsonCodec {
     private const val AMAP_RESULT_KEY = "amapResult"
     private const val BAIDU_ATTEMPTS_KEY = "baiduAttempts"
     private const val AMAP_ATTEMPTS_KEY = "amapAttempts"
+    private const val BAIDU_TERMINAL_KEY = "baiduTerminal"
+    private const val AMAP_TERMINAL_KEY = "amapTerminal"
     private const val RETRY_PROVIDER_KEY = "retryProvider"
     private const val RETRY_AT_MILLIS_KEY = "retryAtMillis"
     private const val BLOCKED_REASON_KEY = "blockedReason"
@@ -724,6 +795,7 @@ internal object AutomationSnapshotJsonCodec {
     private const val POI_NAME_KEY = "poiName"
     private const val STAY_DURATION_MILLIS_KEY = "stayDurationMillis"
     private const val CHECK_IN_TIME_MILLIS_KEY = "checkInTimeMillis"
+    private const val EVIDENCE_SUMMARY_KEY = "evidenceSummary"
     private const val RECORD_ID_KEY = "recordId"
     private const val PLACE_NAME_KEY = "placeName"
     private const val PLACE_ADDRESS_KEY = "placeAddress"
@@ -746,4 +818,8 @@ internal object AutomationSnapshotJsonCodec {
     private const val REASON_KEY = "reason"
     private const val LAST_UPDATED_MILLIS_KEY = "lastUpdatedMillis"
     private const val MAX_RUNTIME_LOG_COUNT = 300
+    private val SUCCESSFUL_OPERATION_STATUSES = setOf(
+        MapOperationStatus.SUCCESS,
+        MapOperationStatus.ALREADY_COMPLETED
+    )
 }

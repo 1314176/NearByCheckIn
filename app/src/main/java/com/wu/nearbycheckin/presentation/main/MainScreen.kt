@@ -63,6 +63,7 @@ import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.core.model.AutomationLogEntry
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.core.model.CheckInRecord
+import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.ui.theme.NearbyCheckInTheme
 
 
@@ -85,6 +86,7 @@ fun MainScreen(
     RecordsDialog(state, onEvent)
     RuntimeLogsDialog(state, onEvent)
     ClearRecordsDialog(state, onEvent)
+    ClearBaiduCompletionDialog(state, onEvent)
 
     Column(
         modifier = modifier
@@ -96,7 +98,7 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(32.dp))
 
         Text(
-            text = "NEARBY CHECK-IN",
+            text = "NearByCheckIn",
             style = MaterialTheme.typography.headlineSmall,
             color = RadarColors.NeonBlue,
             letterSpacing = 4.sp,
@@ -186,14 +188,17 @@ private fun ActiveTaskCard(state: MainUiState, onEvent: (MainUiEvent) -> Unit) {
                 color = Color.White
             )
             Text(
-                text = "当前状态: ${state.transactionStatus}",
+                text = "当前状态: " +
+                        state.baiduProviderState.ifBlank {
+                            state.transactionStatus
+                        },
                 style = MaterialTheme.typography.bodySmall,
                 color = RadarColors.NeonBlue
             )
 
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth()) {
-                TaskStatusChip("百度", state.baiduStatus)
+                TaskStatusChip("百度", state.baiduProviderState)
                 Spacer(modifier = Modifier.width(8.dp))
                 TaskStatusChip("高德", state.amapStatus)
                 Spacer(modifier = Modifier.width(8.dp))
@@ -216,7 +221,32 @@ private fun ActiveTaskCard(state: MainUiState, onEvent: (MainUiEvent) -> Unit) {
             )
         }
 
-        if (state.transactionStatus == "BLOCKED") {
+        if (state.pluginPage.isNotBlank()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "百度候选 ${state.baiduCandidateCount} | " +
+                        "永久完成 ${state.baiduCompletedCount}",
+                style = MaterialTheme.typography.labelSmall,
+                color = RadarColors.NeonBlue
+            )
+            Text(
+                text = "插件 ${state.pluginPage} / ${state.pluginAction}",
+                style = MaterialTheme.typography.labelSmall,
+                color = RadarColors.TextGray
+            )
+            if (state.pluginEvidence.isNotBlank()) {
+                Text(
+                    text = "证据: ${state.pluginEvidence.take(160)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = RadarColors.TextGray
+                )
+            }
+        }
+
+        if (
+            state.transactionStatus == "BLOCKED" ||
+            state.baiduProviderState == "BLOCKED"
+        ) {
             Spacer(modifier = Modifier.height(12.dp))
             Button(
                 onClick = { onEvent(MainUiEvent.ResumeBlockedTransaction) },
@@ -310,6 +340,22 @@ private fun DataManagementCard(onEvent: (MainUiEvent) -> Unit) {
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SecondaryActionButton("百度记录", Modifier.weight(1f)) {
+                onEvent(
+                    MainUiEvent.QueryProviderRecords(MapProvider.BAIDU)
+                )
+            }
+            SecondaryActionButton("高德记录", Modifier.weight(1f)) {
+                onEvent(
+                    MainUiEvent.QueryProviderRecords(MapProvider.AMAP)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
         SecondaryActionButton(
             text = "运行日志",
             modifier = Modifier.fillMaxWidth()
@@ -317,6 +363,18 @@ private fun DataManagementCard(onEvent: (MainUiEvent) -> Unit) {
             onEvent(MainUiEvent.ShowRuntimeLogs)
         }
         Spacer(modifier = Modifier.height(8.dp))
+        TextButton(
+            onClick = {
+                onEvent(MainUiEvent.RequestClearBaiduCompletion)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                "清空百度完成键",
+                color = Color.Yellow.copy(alpha = 0.8f),
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
         TextButton(
             onClick = { onEvent(MainUiEvent.RequestClearAll) },
             modifier = Modifier.fillMaxWidth()
@@ -599,6 +657,18 @@ private fun RecordsContent(records: List<CheckInRecord>) {
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+            record.provider?.let { provider ->
+                Text(
+                    text = "Provider：${provider.name}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (record.evidenceSummary.isNotBlank()) {
+                Text(
+                    text = "证据：${record.evidenceSummary}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             if (index < records.lastIndex) {
                 Spacer(modifier = Modifier.height(12.dp))
                 HorizontalDivider()
@@ -656,6 +726,8 @@ private fun RuntimeLogsDialog(
  */
 @Composable
 private fun RuntimeLogsContent(logs: List<AutomationLogEntry>) {
+    Text(text = "界面显示最近300条；完整日志按25 MB分段，不自动覆盖或删除，仅手动清空时同步删除。")
+    Spacer(modifier = Modifier.height(8.dp))
     if (logs.isEmpty()) {
         Text(text = "暂无运行日志。")
         return
@@ -667,11 +739,21 @@ private fun RuntimeLogsContent(logs: List<AutomationLogEntry>) {
             .verticalScroll(rememberScrollState())
     ) {
         logs.forEachIndexed { index, entry ->
+            val levelText = when (entry.level) {
+                AutomationLogLevel.INFO -> "信息"
+                AutomationLogLevel.WARNING -> "警告"
+                AutomationLogLevel.ERROR -> "错误"
+            }
+            val levelColor = when (entry.level) {
+                AutomationLogLevel.INFO -> RadarColors.NeonBlue
+                AutomationLogLevel.WARNING -> Color.Yellow
+                AutomationLogLevel.ERROR -> Color.Red
+            }
+
             Text(
-                text = "${formatLogTime(entry.timestampMillis)} " +
-                        "[${entry.level.displayText()}] ${entry.source}",
+                text = "${formatLogTime(entry.timestampMillis)} [$levelText] ${entry.source}",
                 style = MaterialTheme.typography.labelSmall,
-                color = entry.level.displayColor()
+                color = levelColor
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -734,6 +816,48 @@ private fun ClearRecordsDialog(
 }
 
 /**
+ * 根据状态显示百度完成键清理二次确认对话框。
+ */
+@Composable
+private fun ClearBaiduCompletionDialog(
+    state: MainUiState,
+    onEvent: (MainUiEvent) -> Unit
+) {
+    if (!state.showClearBaiduCompletionDialog) {
+        return
+    }
+    AlertDialog(
+        onDismissRequest = {
+            onEvent(MainUiEvent.DismissClearBaiduCompletion)
+        },
+        title = { Text(text = "清空百度完成键") },
+        text = {
+            Text(
+                text = "此操作保留历史记录，但允许百度已完成地点重新进入候选队列。"
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onEvent(MainUiEvent.ConfirmClearBaiduCompletion)
+                }
+            ) {
+                Text(text = "确认清空")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    onEvent(MainUiEvent.DismissClearBaiduCompletion)
+                }
+            ) {
+                Text(text = "取消")
+            }
+        }
+    )
+}
+
+/**
  * 将记录时间戳格式化为设备本地时分秒。
  */
 private fun formatCheckInTime(checkInTimeMillis: Long): String {
@@ -749,28 +873,6 @@ private fun formatLogTime(timestampMillis: Long): String {
     return Instant.ofEpochMilli(timestampMillis)
         .atZone(ZoneId.systemDefault())
         .format(logTimeFormatter)
-}
-
-/**
- * 将日志级别转换为中文显示文本。
- */
-private fun AutomationLogLevel.displayText(): String {
-    return when (this) {
-        AutomationLogLevel.INFO -> "信息"
-        AutomationLogLevel.WARNING -> "警告"
-        AutomationLogLevel.ERROR -> "错误"
-    }
-}
-
-/**
- * 将日志级别转换为对应的界面颜色。
- */
-private fun AutomationLogLevel.displayColor(): Color {
-    return when (this) {
-        AutomationLogLevel.INFO -> RadarColors.NeonBlue
-        AutomationLogLevel.WARNING -> Color.Yellow
-        AutomationLogLevel.ERROR -> Color.Red
-    }
 }
 
 /**

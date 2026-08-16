@@ -8,15 +8,21 @@ package com.wu.nearbycheckin.platform.accessibility
 
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 
+import androidx.core.content.ContextCompat
+
 import com.wu.nearbycheckin.app.NearbyCheckInApplication
 import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.AutomationSessionStatus
+import com.wu.nearbycheckin.platform.cruise.CruiseService
 import com.wu.nearbycheckin.platform.maps.AccessibilityWindowInspector
 
 
@@ -30,7 +36,10 @@ class DualMapAccessibilityService : AccessibilityService() {
         (application as NearbyCheckInApplication).appContainer
     }
     private lateinit var splitController: DualMapSplitController
-    private lateinit var commandWorker: DualMapCommandWorker
+    private lateinit var gestureTapDispatcher:
+        AccessibilityGestureTapDispatcher
+    private lateinit var baiduProviderWorker: ProviderAutomationWorker
+    private lateinit var amapProviderWorker: ProviderAutomationWorker
     private var lastInspectionTimeMillis = 0L
     private var lastSnapshotSignature = ""
 
@@ -66,16 +75,32 @@ class DualMapAccessibilityService : AccessibilityService() {
             inspectWindows = ::inspectCurrentWindows,
             onStatusChanged = ::saveAutomationStatus
         )
-        commandWorker = DualMapCommandWorker(
+        gestureTapDispatcher = AccessibilityGestureTapDispatcher(this)
+        baiduProviderWorker = ProviderAutomationWorker(
             service = this,
-            coordinator = appContainer.checkInCoordinator,
+            repository = appContainer.transactionRepository,
+            coordinator = appContainer.providerAutomationCoordinator,
+            registry = appContainer.mapAutomationPluginRegistry,
+            provider = MapProvider.BAIDU,
+            gestureDispatcher = gestureTapDispatcher,
+            onStatusChanged = ::saveAutomationStatus
+        )
+        amapProviderWorker = ProviderAutomationWorker(
+            service = this,
+            repository = appContainer.transactionRepository,
+            coordinator = appContainer.providerAutomationCoordinator,
+            registry = appContainer.mapAutomationPluginRegistry,
+            provider = MapProvider.AMAP,
+            gestureDispatcher = gestureTapDispatcher,
             onStatusChanged = ::saveAutomationStatus
         )
 
         saveAutomationStatus("双地图无障碍服务已连接")
         appContainer.checkInCoordinator.resumePendingTransactions()
+        resumeCruiseServiceIfNeeded()
         inspectCurrentWindows("服务连接")
-        commandWorker.start()
+        baiduProviderWorker.start()
+        amapProviderWorker.start(AMAP_WORKER_START_DELAY_MILLIS)
         mainHandler.post(autoSplitRequestRunnable)
         mainHandler.postDelayed(
             heartbeatRunnable,
@@ -83,16 +108,38 @@ class DualMapAccessibilityService : AccessibilityService() {
         )
     }
 
+    // 在进程或安装更新后恢复仍处于运行状态的前台定位服务。
+    private fun resumeCruiseServiceIfNeeded() {
+        if (
+            appContainer.transactionRepository.currentSnapshot()
+                .session?.status != AutomationSessionStatus.RUNNING
+        ) {
+            return
+        }
+        runCatching {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, CruiseService::class.java)
+            )
+        }.onFailure { error ->
+            Log.e(TAG, "自动恢复巡航定位服务失败", error)
+            saveAutomationStatus("自动恢复巡航定位服务失败")
+        }
+    }
+
     // 按包名和时间节流窗口变化诊断。
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) {
             return
         }
+        if (event.eventType in TRANSIENT_MAP_EVENT_TYPES) {
+            forwardTransientMapMessage(event)
+        }
         if (
             event.eventType ==
-            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_ANNOUNCEMENT
         ) {
-            forwardTransientMapMessage(event)
             return
         }
         if (event.eventType !in DIAGNOSTIC_EVENT_TYPES) {
@@ -126,6 +173,11 @@ class DualMapAccessibilityService : AccessibilityService() {
             .joinToString(separator = " ") { text ->
                 text?.toString().orEmpty()
             }
+            .plus(" ${event.contentDescription?.toString().orEmpty()}")
+            .plus(" ${event.source?.text?.toString().orEmpty()}")
+            .plus(
+                " ${event.source?.contentDescription?.toString().orEmpty()}"
+            )
             .trim()
         if (
             AmapTransientMessagePolicy.isRateLimitEvidence(
@@ -133,7 +185,7 @@ class DualMapAccessibilityService : AccessibilityService() {
                 message = message
             )
         ) {
-            commandWorker.onAmapRateLimitDetected(message)
+            saveAutomationStatus("高德地图提示：$message")
         }
     }
 
@@ -149,8 +201,14 @@ class DualMapAccessibilityService : AccessibilityService() {
         if (::splitController.isInitialized) {
             splitController.stop()
         }
-        if (::commandWorker.isInitialized) {
-            commandWorker.stop()
+        if (::baiduProviderWorker.isInitialized) {
+            baiduProviderWorker.stop()
+        }
+        if (::amapProviderWorker.isInitialized) {
+            amapProviderWorker.stop()
+        }
+        if (::gestureTapDispatcher.isInitialized) {
+            gestureTapDispatcher.clear()
         }
         super.onDestroy()
     }
@@ -171,7 +229,8 @@ class DualMapAccessibilityService : AccessibilityService() {
         }
         if (
             splitController.isRunning ||
-            commandWorker.isBusy
+            baiduProviderWorker.isBusy ||
+            amapProviderWorker.isBusy
         ) {
             saveAutomationStatus(
                 "双地图自动化正在执行，已忽略重复请求"
@@ -249,6 +308,7 @@ class DualMapAccessibilityService : AccessibilityService() {
     }
 
     private companion object {
+        const val AMAP_WORKER_START_DELAY_MILLIS = 500L
         const val TAG = "DualMapA11yService"
         const val BAIDU_MAP_PACKAGE_NAME = "com.baidu.BaiduMap"
         const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
@@ -256,6 +316,12 @@ class DualMapAccessibilityService : AccessibilityService() {
         const val AUTO_SPLIT_REQUEST_POLL_INTERVAL_MILLIS = 500L
         const val INSPECTION_THROTTLE_MILLIS = 1_000L
         const val HEARTBEAT_LOG_INTERVAL_MILLIS = 30_000L
+        val TRANSIENT_MAP_EVENT_TYPES = setOf(
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED,
+            AccessibilityEvent.TYPE_ANNOUNCEMENT,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+        )
         const val HEARTBEAT_REASON = "诊断心跳"
 
         val DIAGNOSTIC_EVENT_TYPES = setOf(

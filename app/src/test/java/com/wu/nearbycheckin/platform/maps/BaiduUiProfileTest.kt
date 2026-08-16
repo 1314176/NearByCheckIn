@@ -28,7 +28,7 @@ class BaiduUiProfileTest {
         val decision = profile.decide(
             MapUiSnapshot(
                 packageName = profile.packageName,
-                appVersion = profile.supportedAppVersion,
+                appVersion = "21.19.0",
                 nodes = listOf(
                     MapUiNodeSnapshot(
                         text = "我的",
@@ -125,7 +125,6 @@ class BaiduUiProfileTest {
         val result = BaiduMapAdapter.execute(
             rootNode = null,
             action = MapUiAction.DISMISS_SHARE_PANEL,
-            appVersion = profile.supportedAppVersion,
             gestureTap = { _, _ -> false },
             dismissSharePanel = {
                 dismissed = true
@@ -181,7 +180,7 @@ class BaiduUiProfileTest {
     ): MapUiSnapshot {
         return MapUiSnapshot(
             packageName = profile.packageName,
-            appVersion = profile.supportedAppVersion,
+            appVersion = "21.19.0",
             nodes = texts.map { text ->
                 MapUiNodeSnapshot(text = text)
             } + clickable.map { text ->

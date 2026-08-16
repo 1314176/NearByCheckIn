@@ -26,7 +26,9 @@ data class NearbyPlaceCandidate(
     val speedKmh: Float,
     val locationTimeMillis: Long,
     val firstSeenAtMillis: Long,
-    val observedAtMillis: Long
+    val observedAtMillis: Long,
+    val deviceLatitude: Double = 0.0,
+    val deviceLongitude: Double = 0.0
 )
 
 /**
@@ -52,6 +54,7 @@ data class AutomationSession(
  */
 enum class DualMapTransactionStatus {
     QUEUED,
+    RUNNING,
     BAIDU_RUNNING,
     AMAP_RUNNING,
     PARTIAL_SUCCESS,
@@ -71,6 +74,8 @@ data class DualMapState(
     val amapResult: MapOperationResult? = null,
     val baiduAttempts: Int = 0,
     val amapAttempts: Int = 0,
+    val baiduTerminal: Boolean = false,
+    val amapTerminal: Boolean = false,
     val retryProvider: MapProvider? = null,
     val retryAtMillis: Long = 0L,
     val blockedReason: String = ""
@@ -162,6 +167,10 @@ data class AutomationSnapshot(
     val records: List<CheckInRecord> = emptyList(),
     val legacyDualMapRecords: List<DualMapCheckInRecord> = emptyList(),
     val completedPlaceKeys: Set<String> = emptySet(),
+    val providerCandidates: List<ProviderPlaceCandidate> = emptyList(),
+    val providerTasks: List<ProviderCheckInTask> = emptyList(),
+    val providerCompletedKeys: Set<ProviderPlaceKey> = emptySet(),
+    val providerRuntime: DualMapRuntimeState = DualMapRuntimeState(),
     val diagnostics: AccessibilityDiagnostics = AccessibilityDiagnostics(),
     val automationStatus: String = "",
     val autoSplitRequestedAtMillis: Long = 0L,
@@ -182,15 +191,44 @@ data class AutomationSnapshot(
                 transaction.createdAtMillis
             }
 
+    val activeProviderTask: ProviderCheckInTask?
+        get() = providerTasks.firstOrNull { task ->
+            task.status in ACTIVE_PROVIDER_TASK_STATUSES
+        }
+
+    // 返回指定 Provider 按创建时间排列的未终结任务。
+    fun providerQueue(provider: MapProvider): List<ProviderCheckInTask> {
+        return providerTasks.filter { task ->
+            task.provider == provider &&
+                    task.status in QUEUED_PROVIDER_TASK_STATUSES
+        }.sortedBy(ProviderCheckInTask::createdAtMillis)
+    }
+
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 4
+        const val CURRENT_SCHEMA_VERSION = 6
 
         private val ACTIVE_TRANSACTION_STATUSES = setOf(
+            DualMapTransactionStatus.RUNNING,
             DualMapTransactionStatus.BAIDU_RUNNING,
             DualMapTransactionStatus.AMAP_RUNNING,
             DualMapTransactionStatus.PARTIAL_SUCCESS,
             DualMapTransactionStatus.RETRY_WAIT,
             DualMapTransactionStatus.BLOCKED
+        )
+
+        private val ACTIVE_PROVIDER_TASK_STATUSES = setOf(
+            ProviderTaskStatus.ACTIVE,
+            ProviderTaskStatus.VERIFYING,
+            ProviderTaskStatus.RETRY_WAIT,
+            ProviderTaskStatus.BLOCKED
+        )
+
+        private val QUEUED_PROVIDER_TASK_STATUSES = setOf(
+            ProviderTaskStatus.QUEUED,
+            ProviderTaskStatus.ACTIVE,
+            ProviderTaskStatus.VERIFYING,
+            ProviderTaskStatus.RETRY_WAIT,
+            ProviderTaskStatus.BLOCKED
         )
     }
 }

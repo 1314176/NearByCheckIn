@@ -7,7 +7,10 @@
 package com.wu.nearbycheckin.data.repository
 
 
+import java.io.File
+
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,9 +19,16 @@ import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.core.model.AutomationLogEntry
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.core.model.AutomationSnapshot
+import com.wu.nearbycheckin.core.model.CheckInRecord
 import com.wu.nearbycheckin.core.model.DualMapTransactionStatus
 import com.wu.nearbycheckin.core.model.MapCommand
 import com.wu.nearbycheckin.core.model.MapCommandStatus
+import com.wu.nearbycheckin.core.model.MapOperationEvidence
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.ProviderCheckInTask
+import com.wu.nearbycheckin.core.model.ProviderPlaceKey
+import com.wu.nearbycheckin.core.model.ProviderTaskStatus
+import com.wu.nearbycheckin.core.domain.coordinator.AmapRealLocationDeduplicationPolicy
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 
 
@@ -30,7 +40,11 @@ class SharedPreferencesCheckInTransactionRepository(
     private val legacyMigrator: LegacyCheckInDataMigrator
 ) : CheckInTransactionRepository {
 
-    private val preferences = context.applicationContext.getSharedPreferences(
+    private val applicationContext = context.applicationContext
+    private val runtimeLogFileStore = AutomationRuntimeLogFileStore(
+        File(applicationContext.filesDir, RUNTIME_LOG_DIRECTORY_NAME)
+    )
+    private val preferences = applicationContext.getSharedPreferences(
         PREFERENCES_NAME,
         Context.MODE_PRIVATE
     )
@@ -74,6 +88,7 @@ class SharedPreferencesCheckInTransactionRepository(
         }
 
         persistSnapshot(updated)
+        archiveLatestRuntimeLog(current, updated)
         mutableSnapshot.value = updated
         return updated
     }
@@ -84,9 +99,10 @@ class SharedPreferencesCheckInTransactionRepository(
                 !statusText.startsWith(CANDIDATE_REJECTED_STATUS_PREFIX)
     }
 
-    // 原子领取当前活动事务的一个到期命令。
+    // 原子领取指定 Provider 队列中的一个到期命令。
     @Synchronized
     override fun claimNextCommand(
+        provider: MapProvider,
         workerId: String,
         nowMillis: Long,
         leaseDurationMillis: Long
@@ -101,6 +117,16 @@ class SharedPreferencesCheckInTransactionRepository(
             }
         val commandIndex = current.commands.indexOfFirst { command ->
             command.transactionId in activeTransactionIds &&
+                    command.provider == provider &&
+                    (
+                            provider != MapProvider.AMAP ||
+                                    AmapRealLocationDeduplicationPolicy
+                                        .isLocationLeader(
+                                            snapshot = current,
+                                            transactionId =
+                                                command.transactionId
+                                        )
+                            ) &&
                     command.availableAtMillis <= nowMillis &&
                     (
                             command.status == MapCommandStatus.PENDING ||
@@ -128,6 +154,172 @@ class SharedPreferencesCheckInTransactionRepository(
         persistSnapshot(updated)
         mutableSnapshot.value = updated
         return claimedCommand
+    }
+
+    // 原子领取指定 Provider 的第一条可执行地点任务。
+    @Synchronized
+    override fun claimNextProviderTask(
+        provider: MapProvider,
+        workerId: String,
+        nowMillis: Long,
+        leaseDurationMillis: Long
+    ): ProviderCheckInTask? {
+        val current = mutableSnapshot.value
+        val visibleKeys = current.providerCandidates
+            .asSequence()
+            .filter { candidate -> candidate.provider == provider }
+            .map { candidate -> candidate.toPlaceKey() }
+            .toSet()
+        val taskIndex = current.providerTasks.indexOfFirst { task ->
+            task.provider == provider &&
+                    task.candidateKey in visibleKeys &&
+                    task.candidateKey !in current.providerCompletedKeys &&
+                    task.availableAtMillis <= nowMillis &&
+                    (
+                            task.status == ProviderTaskStatus.QUEUED ||
+                                    task.status ==
+                                    ProviderTaskStatus.RETRY_WAIT ||
+                                    (
+                                            task.status ==
+                                                ProviderTaskStatus.ACTIVE &&
+                                                    task.leaseUntilMillis <=
+                                                    nowMillis
+                                            )
+                            )
+        }
+        if (taskIndex < 0) {
+            return null
+        }
+        val task = current.providerTasks[taskIndex]
+        val claimed = task.copy(
+            status = ProviderTaskStatus.ACTIVE,
+            attempts = task.attempts + 1,
+            leaseOwner = workerId,
+            leaseUntilMillis = nowMillis + leaseDurationMillis,
+            updatedAtMillis = nowMillis,
+            lastError = ""
+        )
+        val updated = current.copy(
+            providerTasks = current.providerTasks.toMutableList().apply {
+                this[taskIndex] = claimed
+            },
+            providerRuntime = current.providerRuntime.copy(
+                activeProvider = provider
+            )
+        )
+        persistSnapshot(updated)
+        mutableSnapshot.value = updated
+        return claimed
+    }
+
+    // 原子完成或阻断 Provider 地点任务并保存证据。
+    @Synchronized
+    override fun completeProviderTask(
+        taskId: String,
+        status: ProviderTaskStatus,
+        evidence: MapOperationEvidence?,
+        errorMessage: String,
+        nowMillis: Long
+    ): Boolean {
+        val current = mutableSnapshot.value
+        val taskIndex = current.providerTasks.indexOfFirst { task ->
+            task.taskId == taskId
+        }
+        if (taskIndex < 0) {
+            return false
+        }
+        val currentTask = current.providerTasks[taskIndex]
+        if (currentTask.status in TERMINAL_PROVIDER_TASK_STATUSES) {
+            return currentTask.status == status
+        }
+        val updatedTask = currentTask.copy(
+            status = status,
+            updatedAtMillis = nowMillis,
+            leaseOwner = "",
+            leaseUntilMillis = 0L,
+            lastError = errorMessage,
+            evidence = evidence
+        )
+        val completedKeys = if (
+            status == ProviderTaskStatus.COMPLETED ||
+            status == ProviderTaskStatus.SKIPPED
+        ) {
+            current.providerCompletedKeys + updatedTask.candidateKey
+        } else {
+            current.providerCompletedKeys
+        }
+        val updated = current.copy(
+            providerTasks = current.providerTasks.toMutableList().apply {
+                this[taskIndex] = updatedTask
+            },
+            providerCompletedKeys = completedKeys,
+            records = if (status == ProviderTaskStatus.COMPLETED) {
+                current.records + CheckInRecord(
+                    id = "provider-$taskId",
+                    poiUid = updatedTask.candidateKey.serialized(),
+                    poiName = updatedTask.candidate.name,
+                    address = updatedTask.candidate.address,
+                    category = updatedTask.provider.name,
+                    latitude = updatedTask.candidate.latitude ?: 0.0,
+                    longitude = updatedTask.candidate.longitude ?: 0.0,
+                    distanceMeters = updatedTask.candidate.distanceText
+                        .filter(Char::isDigit).toIntOrNull() ?: 0,
+                    stayDurationMillis = 0L,
+                    checkInTimeMillis = nowMillis,
+                    provider = updatedTask.provider,
+                    evidenceSummary = evidence?.message.orEmpty()
+                )
+            } else {
+                current.records
+            },
+            providerRuntime = current.providerRuntime.copy(
+                activeProvider = null
+            )
+        )
+        persistSnapshot(updated)
+        mutableSnapshot.value = updated
+        return true
+    }
+
+    // 原子写入永久完成键并幂等关闭所有同键活动任务。
+    @Synchronized
+    override fun markProviderCompleted(
+        key: ProviderPlaceKey,
+        evidence: MapOperationEvidence?,
+        nowMillis: Long
+    ): Boolean {
+        val current = mutableSnapshot.value
+        val alreadyCompleted = key in current.providerCompletedKeys
+        val tasks = current.providerTasks.map { task ->
+            if (
+                task.candidateKey == key &&
+                task.status !in TERMINAL_PROVIDER_TASK_STATUSES
+            ) {
+                task.copy(
+                    status = if (task.candidate.completed) {
+                        ProviderTaskStatus.SKIPPED
+                    } else {
+                        ProviderTaskStatus.COMPLETED
+                    },
+                    updatedAtMillis = nowMillis,
+                    leaseOwner = "",
+                    leaseUntilMillis = 0L,
+                    evidence = evidence
+                )
+            } else {
+                task
+            }
+        }
+        if (alreadyCompleted && tasks == current.providerTasks) {
+            return false
+        }
+        val updated = current.copy(
+            providerCompletedKeys = current.providerCompletedKeys + key,
+            providerTasks = tasks
+        )
+        persistSnapshot(updated)
+        mutableSnapshot.value = updated
+        return true
     }
 
     // 原子保存供 UI、通知和悬浮窗共同观察的诊断。
@@ -194,7 +386,11 @@ class SharedPreferencesCheckInTransactionRepository(
     }
 
     // 清空应用内持久化运行日志。
+    @Synchronized
     override fun clearRuntimeLogs() {
+        runCatching(runtimeLogFileStore::clear).onFailure { error ->
+            Log.e(TAG, "清空完整运行日志文件失败", error)
+        }
         updateSnapshot { snapshot ->
             snapshot.copy(runtimeLogs = emptyList())
         }
@@ -215,6 +411,7 @@ class SharedPreferencesCheckInTransactionRepository(
         )
         return try {
             persistSnapshot(emptySnapshot)
+            archiveLatestRuntimeLog(current, emptySnapshot)
             mutableSnapshot.value = emptySnapshot
             true
         } catch (_: IllegalStateException) {
@@ -256,6 +453,22 @@ class SharedPreferencesCheckInTransactionRepository(
         }
     }
 
+    // 将本次新增的 UI 日志同步追加到不覆盖历史的完整日志文件。
+    private fun archiveLatestRuntimeLog(
+        previous: AutomationSnapshot,
+        updated: AutomationSnapshot
+    ) {
+        val latest = updated.runtimeLogs.lastOrNull() ?: return
+        if (latest == previous.runtimeLogs.lastOrNull()) {
+            return
+        }
+        runCatching {
+            runtimeLogFileStore.append(latest)
+        }.onFailure { error ->
+            Log.e(TAG, "追加完整运行日志文件失败", error)
+        }
+    }
+
     // 向快照追加一条去重、截断并限量保存的结构化日志。
     private fun AutomationSnapshot.withRuntimeLog(
         source: String,
@@ -291,7 +504,9 @@ class SharedPreferencesCheckInTransactionRepository(
     }
 
     private companion object {
+        const val TAG = "CheckInTransactionRepo"
         const val PREFERENCES_NAME = "check_in_transactions_v4"
+        const val RUNTIME_LOG_DIRECTORY_NAME = "automation_logs"
         const val SCHEMA_VERSION_KEY = "schema_version"
         const val SNAPSHOT_JSON_KEY = "automation_snapshot_json"
         const val DEFAULT_LOG_SOURCE = "自动化"
@@ -302,8 +517,19 @@ class SharedPreferencesCheckInTransactionRepository(
         const val CANDIDATE_REJECTED_STATUS_PREFIX = "候选已拒绝："
 
         val EXECUTABLE_STATUSES = setOf(
+            DualMapTransactionStatus.RUNNING,
             DualMapTransactionStatus.BAIDU_RUNNING,
-            DualMapTransactionStatus.AMAP_RUNNING
+            DualMapTransactionStatus.AMAP_RUNNING,
+            DualMapTransactionStatus.PARTIAL_SUCCESS,
+            DualMapTransactionStatus.RETRY_WAIT,
+            DualMapTransactionStatus.BLOCKED
+        )
+
+        val TERMINAL_PROVIDER_TASK_STATUSES = setOf(
+            ProviderTaskStatus.COMPLETED,
+            ProviderTaskStatus.SKIPPED,
+            ProviderTaskStatus.FAILED,
+            ProviderTaskStatus.CANCELLED
         )
     }
 }

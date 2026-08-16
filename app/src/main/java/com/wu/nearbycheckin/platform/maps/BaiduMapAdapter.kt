@@ -101,13 +101,8 @@ object BaiduMapAdapter {
             rootNode = rootNode,
             packageName = BaiduUiProfile.packageName,
             appVersion = appVersion,
-            gestureLabels = if (
-                appVersion == BaiduUiProfile.supportedAppVersion
-            ) {
+            gestureLabels =
                 MapUiActionLabels.allForProvider(MapProvider.BAIDU)
-            } else {
-                emptyList()
-            }
         )
     }
 
@@ -115,7 +110,6 @@ object BaiduMapAdapter {
     fun execute(
         rootNode: AccessibilityNodeInfo?,
         action: MapUiAction,
-        appVersion: String,
         gestureTap: (Int, Int) -> Boolean,
         dismissSharePanel: () -> Boolean
     ): AccessibilityClickResult {
@@ -136,13 +130,7 @@ object BaiduMapAdapter {
                 MapProvider.BAIDU,
                 action
             ),
-            gestureTap = if (
-                appVersion == BaiduUiProfile.supportedAppVersion
-            ) {
-                gestureTap
-            } else {
-                null
-            }
+            gestureTap = gestureTap
         )
     }
 

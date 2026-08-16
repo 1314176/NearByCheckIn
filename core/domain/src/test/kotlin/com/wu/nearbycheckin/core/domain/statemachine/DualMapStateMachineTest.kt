@@ -30,9 +30,9 @@ class DualMapStateMachineTest {
         )
     )
 
-    // 验证标准路径严格按照百度后高德的顺序执行。
+    // 验证启动时同时生成百度和高德命令并允许结果乱序回写。
     @Test
-    fun completesBaiduThenAmap() {
+    fun startsBothProvidersAndAcceptsOutOfOrderResults() {
         val started = stateMachine.reduce(
             state = DualMapState(
                 status = DualMapTransactionStatus.QUEUED
@@ -40,38 +40,37 @@ class DualMapStateMachineTest {
             event = DualMapEvent.ExecutionStarted(1_000L)
         )
         assertEquals(
-            DualMapTransactionStatus.BAIDU_RUNNING,
+            DualMapTransactionStatus.RUNNING,
             started.newState.status
         )
         assertEquals(
-            MapProvider.BAIDU,
-            started.executeCommand().provider
+            setOf(MapProvider.BAIDU, MapProvider.AMAP),
+            started.commands.map { command ->
+                (command as DualMapCommand.ExecuteMapOperation).provider
+            }.toSet()
         )
 
-        val baiduCompleted = stateMachine.reduce(
+        val amapCompleted = stateMachine.reduce(
             state = started.newState,
             event = DualMapEvent.MapResultReceived(
                 result = result(
-                    provider = MapProvider.BAIDU,
+                    provider = MapProvider.AMAP,
                     status = MapOperationStatus.SUCCESS
                 ),
                 nowMillis = 2_000L
             )
         )
         assertEquals(
-            DualMapTransactionStatus.AMAP_RUNNING,
-            baiduCompleted.newState.status
+            DualMapTransactionStatus.PARTIAL_SUCCESS,
+            amapCompleted.newState.status
         )
-        assertEquals(
-            MapProvider.AMAP,
-            baiduCompleted.executeCommand().provider
-        )
+        assertTrue(amapCompleted.commands.isEmpty())
 
-        val amapCompleted = stateMachine.reduce(
-            state = baiduCompleted.newState,
+        val baiduCompleted = stateMachine.reduce(
+            state = amapCompleted.newState,
             event = DualMapEvent.MapResultReceived(
                 result = result(
-                    provider = MapProvider.AMAP,
+                    provider = MapProvider.BAIDU,
                     status = MapOperationStatus.ALREADY_COMPLETED
                 ),
                 nowMillis = 3_000L
@@ -79,22 +78,18 @@ class DualMapStateMachineTest {
         )
         assertEquals(
             DualMapTransactionStatus.COMPLETED,
-            amapCompleted.newState.status
+            baiduCompleted.newState.status
         )
         assertTrue(
-            DomainEffect.MarkPlaceCompleted in amapCompleted.effects
+            DomainEffect.MarkPlaceCompleted in baiduCompleted.effects
         )
     }
 
-    // 验证一端成功后只重试失败的另一端。
+    // 验证高德失败会独立生成延迟重试且不等待百度结果。
     @Test
-    fun retriesOnlyFailedProviderAfterPartialSuccess() {
+    fun schedulesOnlyFailedProviderRetryImmediately() {
         val state = DualMapState(
-            status = DualMapTransactionStatus.AMAP_RUNNING,
-            baiduResult = result(
-                provider = MapProvider.BAIDU,
-                status = MapOperationStatus.SUCCESS
-            ),
+            status = DualMapTransactionStatus.RUNNING,
             baiduAttempts = 1,
             amapAttempts = 1
         )
@@ -109,37 +104,29 @@ class DualMapStateMachineTest {
             )
         )
         assertEquals(
-            DualMapTransactionStatus.PARTIAL_SUCCESS,
+            DualMapTransactionStatus.RUNNING,
             failed.newState.status
-        )
-        assertTrue(failed.commands.isEmpty())
-
-        val retry = stateMachine.reduce(
-            state = failed.newState,
-            event = DualMapEvent.RetryDue(15_000L)
-        )
-        assertEquals(
-            DualMapTransactionStatus.AMAP_RUNNING,
-            retry.newState.status
         )
         assertEquals(
             MapProvider.AMAP,
-            retry.executeCommand().provider
+            failed.executeCommand().provider
         )
-        assertEquals(2, retry.executeCommand().attempt)
+        assertEquals(2, failed.executeCommand().attempt)
+        assertEquals(15_000L, failed.executeCommand().availableAtMillis)
     }
 
-    // 验证不匹配当前运行端的重复结果不会改变状态。
+    // 验证已经形成终态的 Provider 重复结果不会改变状态。
     @Test
-    fun ignoresDuplicateResultFromUnexpectedProvider() {
+    fun ignoresDuplicateResultFromTerminalProvider() {
         val state = DualMapState(
-            status = DualMapTransactionStatus.AMAP_RUNNING,
+            status = DualMapTransactionStatus.PARTIAL_SUCCESS,
             baiduResult = result(
                 provider = MapProvider.BAIDU,
                 status = MapOperationStatus.SUCCESS
             ),
             baiduAttempts = 1,
-            amapAttempts = 1
+            amapAttempts = 1,
+            baiduTerminal = true
         )
 
         val transition = stateMachine.reduce(

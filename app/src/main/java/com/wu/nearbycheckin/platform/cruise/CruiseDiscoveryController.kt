@@ -23,9 +23,11 @@ import android.util.Log
 
 import androidx.core.content.ContextCompat
 
-import com.wu.nearbycheckin.core.domain.usecase.SubmitCandidateUseCase
-import com.wu.nearbycheckin.core.domain.evaluator.CandidateDecision
-import com.wu.nearbycheckin.core.model.NearbyPlaceCandidate
+import com.wu.nearbycheckin.core.domain.coordinator.ProviderAutomationCoordinator
+import com.wu.nearbycheckin.core.domain.coordinator.ProviderMovementPolicy
+import com.wu.nearbycheckin.core.domain.coordinator.ProviderRefreshSchedulePolicy
+import com.wu.nearbycheckin.core.model.LocationSnapshot
+import com.wu.nearbycheckin.core.model.MovementClass
 
 
 /**
@@ -33,7 +35,7 @@ import com.wu.nearbycheckin.core.model.NearbyPlaceCandidate
  */
 class CruiseDiscoveryController(
     private val context: Context,
-    private val submitCandidateUseCase: SubmitCandidateUseCase,
+    private val providerCoordinator: ProviderAutomationCoordinator,
     private val onStatusChanged: (String) -> Unit
 ) {
 
@@ -45,7 +47,9 @@ class CruiseDiscoveryController(
     private var lastPoiSearchTimeMillis = 0L
     private var lastPoiSearchLocation: Location? = null
     private var continuousScanScheduled = false
-    private val continuousScanPolicy = ContinuousScanPolicy()
+    private val movementPolicy = ProviderMovementPolicy()
+    private val refreshSchedulePolicy = ProviderRefreshSchedulePolicy()
+    private var latestMovementClass = MovementClass.UNKNOWN
 
     private val baiduAuthStateListener:
             (Boolean, String) -> Unit = { passed, description ->
@@ -76,25 +80,8 @@ class CruiseDiscoveryController(
         // 静止状态下强制触发下一次 POI 搜索。
         override fun run() {
             continuousScanScheduled = false
-            val location = latestLocation
-            if (
-                location == null ||
-                !::nearbyPoiSearcher.isInitialized
-            ) {
-                scheduleContinuousScan()
-                return
-            }
-            if (isPoiSearchRunning) {
-                scheduleContinuousScan()
-                return
-            }
-            val started = requestNearbyPoiSearchIfNeeded(
-                location = location,
-                forceSearch = true
-            )
-            if (!started) {
-                scheduleContinuousScan()
-            }
+            providerCoordinator.heartbeat()
+            scheduleContinuousScan()
         }
     }
 
@@ -174,12 +161,8 @@ class CruiseDiscoveryController(
                 if (nearbyPoiList.isEmpty()) {
                     Log.d(TAG, "当前位置附近没有可提交的地点")
                     onStatusChanged("附近暂未发现地点")
-                    continuousScanPolicy.recordCandidateOutcome(
-                        acceptedCount = 0,
-                        deferredCount = 0
-                    )
                 } else {
-                    submitNearbyCandidates(nearbyPoiList)
+                    recordPoiDiagnostics(nearbyPoiList)
                 }
                 rescheduleContinuousScan()
             },
@@ -192,77 +175,17 @@ class CruiseDiscoveryController(
         )
     }
 
-    // 将平台 POI 列表转换为标准候选并提交用例层。
-    private fun submitNearbyCandidates(
+    // 仅记录 SDK 周边检索诊断，候选任务由地图 UI 列表唯一产生。
+    private fun recordPoiDiagnostics(
         nearbyPoiList: List<NearbyPoi>
     ) {
-        val location = latestLocation
-        if (location == null) {
-            Log.w(TAG, "缺少最新定位，暂不提交候选")
-            return
-        }
-
-        val nowMillis = System.currentTimeMillis()
-        val speedKmh = if (location.hasSpeed()) {
-            location.speed *
-                    METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR
-        } else {
-            0F
-        }
-        var acceptedCount = 0
-        var deferredCount = 0
-
-        nearbyPoiList.forEach { nearbyPoi ->
-            val unifiedPlaceId = buildUnifiedPlaceId(nearbyPoi)
-            val providerPlaceIds = buildSet {
-                add(unifiedPlaceId)
-                nearbyPoi.uid.takeIf { uid ->
-                    uid.isNotBlank()
-                }?.let(::add)
-            }
-            val result = submitCandidateUseCase(
-                NearbyPlaceCandidate(
-                    unifiedPlaceId = unifiedPlaceId,
-                    providerPlaceIds = providerPlaceIds,
-                    name = nearbyPoi.name,
-                    address = nearbyPoi.address,
-                    category = nearbyPoi.category,
-                    latitude = nearbyPoi.latitude,
-                    longitude = nearbyPoi.longitude,
-                    distanceMeters = nearbyPoi.distanceMeters,
-                    locationAccuracyMeters = location.accuracy,
-                    speedKmh = speedKmh,
-                    locationTimeMillis = location.time,
-                    firstSeenAtMillis = nowMillis,
-                    observedAtMillis = nowMillis
-                )
-            )
-            when (result.decision) {
-                is CandidateDecision.Accept -> acceptedCount += 1
-                is CandidateDecision.Defer -> deferredCount += 1
-                is CandidateDecision.Reject -> Unit
-            }
-        }
-
         val nearestPoi = nearbyPoiList.first()
-        val statusText = when {
-            acceptedCount > 0 ->
-                "已入队${acceptedCount}个地点，最近：${nearestPoi.name}"
-            deferredCount > 0 ->
-                "正在确认${deferredCount}个候选，最近：${nearestPoi.name}"
-            else ->
-                "附近地点均已完成或正在队列中"
-        }
         Log.d(
             TAG,
-            "候选提交：总数=${nearbyPoiList.size}，" +
-                    "入队=$acceptedCount，暂缓=$deferredCount"
+            "SDK 周边诊断：总数=${nearbyPoiList.size}，" +
+                    "最近=${nearestPoi.name}；不创建 Provider 任务"
         )
-        continuousScanPolicy.recordCandidateOutcome(
-            acceptedCount = acceptedCount,
-            deferredCount = deferredCount
-        )
-        onStatusChanged(statusText)
+        onStatusChanged("已更新位置，等待百度地图读取候选")
     }
 
     // 安排下一次静止心跳扫描。
@@ -291,30 +214,9 @@ class CruiseDiscoveryController(
 
     // 根据当前速度返回静止心跳间隔。
     private fun continuousScanIntervalMillis(): Long {
-        val location = latestLocation
-        val speedKmh = if (
-            location != null &&
-            location.hasSpeed()
-        ) {
-            location.speed *
-                    METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR
-        } else {
-            0F
-        }
-        return continuousScanPolicy.nextIntervalMillis(speedKmh)
-    }
-
-    // 优先使用百度 UID，缺失时生成名称坐标组合键。
-    private fun buildUnifiedPlaceId(nearbyPoi: NearbyPoi): String {
-        if (nearbyPoi.uid.isNotBlank()) {
-            return nearbyPoi.uid
-        }
-        return String.format(
-            Locale.US,
-            "%s|%.5f|%.5f",
-            nearbyPoi.name,
-            nearbyPoi.latitude,
-            nearbyPoi.longitude
+        return refreshSchedulePolicy.nextIntervalMillis(
+            movementClass = latestMovementClass,
+            currentRangeExhausted = false
         )
     }
 
@@ -389,17 +291,40 @@ class CruiseDiscoveryController(
             location.distanceTo(previousLocation) >=
             POI_SEARCH_DISTANCE_METERS
         ) {
-            continuousScanPolicy.resetForLocationChange()
             mainHandler.removeCallbacks(continuousScanRunnable)
             continuousScanScheduled = false
         }
         latestLocation = Location(location)
+        val speedKmh = if (location.hasSpeed()) {
+            location.speed * METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR
+        } else {
+            0F
+        }
+        latestMovementClass = movementPolicy.classify(
+            speedKmh = speedKmh,
+            distanceMeters = previousLocation?.let(location::distanceTo),
+            elapsedMillis = previousLocation?.let { previous ->
+                (location.time - previous.time).coerceAtLeast(0L)
+            }
+        )
+        providerCoordinator.updateLocation(
+            LocationSnapshot(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                accuracyMeters = location.accuracy,
+                speedKmh = speedKmh,
+                timestampMillis = location.time,
+                movementClass = latestMovementClass
+            )
+        )
         val locationText = String.format(
             Locale.US,
-            "纬度 %.6f，经度 %.6f，精度 %.0f 米",
+            "纬度 %.6f，经度 %.6f，精度 %.1f 米，速度 %.2f km/h，状态 %s",
             location.latitude,
             location.longitude,
-            location.accuracy
+            location.accuracy,
+            speedKmh,
+            latestMovementClass.name
         )
         Log.d(TAG, locationText)
         onStatusChanged(locationText)
@@ -430,7 +355,7 @@ class CruiseDiscoveryController(
         }
         if (
             isPoiSearchRunning ||
-            location.accuracy > MAX_ACCEPTABLE_ACCURACY_METERS
+            location.accuracy >= MAX_ACCEPTABLE_ACCURACY_METERS
         ) {
             return false
         }
@@ -472,12 +397,12 @@ class CruiseDiscoveryController(
 
     private companion object {
         const val TAG = "CruiseDiscovery"
-        const val LOCATION_UPDATE_INTERVAL_MILLIS = 5_000L
+        const val LOCATION_UPDATE_INTERVAL_MILLIS = 1_000L
         const val LOCATION_UPDATE_DISTANCE_METERS = 10F
         const val POI_SEARCH_RADIUS_METERS = 1_000
         const val POI_SEARCH_INTERVAL_MILLIS = 30_000L
         const val POI_SEARCH_DISTANCE_METERS = 50F
-        const val MAX_ACCEPTABLE_ACCURACY_METERS = 100F
+        const val MAX_ACCEPTABLE_ACCURACY_METERS = 500F
         const val METERS_PER_SECOND_TO_KILOMETERS_PER_HOUR = 3.6F
         const val CONTINUOUS_SCAN_RETRY_DELAY_MILLIS = 1_000L
     }

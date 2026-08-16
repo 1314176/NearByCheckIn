@@ -97,49 +97,44 @@ object AmapMapAdapter {
         rootNode: AccessibilityNodeInfo?,
         appVersion: String
     ): MapUiSnapshot {
-        val snapshot = MapUiSnapshotCollector.collect(
+        val baseSnapshot = MapUiSnapshotCollector.collect(
             rootNode = rootNode,
             packageName = AmapUiProfile.packageName,
             appVersion = appVersion,
-            gestureLabels = if (
-                appVersion == AmapUiProfile.supportedAppVersion
-            ) {
+            gestureLabels =
                 MapUiActionLabels.allForProvider(MapProvider.AMAP)
-            } else {
-                emptyList()
-            }
         )
-        val checkInButtonTarget = if (
-            appVersion == AmapUiProfile.supportedAppVersion
-        ) {
-            selectCheckInButtonTarget(rootNode).target
-        } else {
-            null
+        val snapshot = baseSnapshot.copy(
+            nodes = baseSnapshot.nodes +
+                    collectDeepWorkflowNodes(rootNode)
+                        .filterNot { deepNode ->
+                            baseSnapshot.nodes.any { existingNode ->
+                                existingNode == deepNode
+                            }
+                        }
+        )
+        if (!shouldUseGeometryFallback(snapshot)) {
+            return snapshot
         }
-        val checkInPointTarget = if (
-            appVersion == AmapUiProfile.supportedAppVersion
-        ) {
+        val checkInPointTarget =
             selectCheckInPointTarget(rootNode).target
-        } else {
-            null
-        }
+        val checkInButtonTarget =
+            selectCheckInButtonTarget(rootNode).target
         return if (
-            checkInButtonTarget != null &&
-            !snapshot.hasLabel("打卡")
-        ) {
-            snapshot.copy(
-                nodes = snapshot.nodes + MapUiNodeSnapshot(
-                    text = "打卡",
-                    gestureTarget = true
-                )
-            )
-        } else if (
-            checkInPointTarget != null &&
-            !snapshot.hasLabel("打卡点")
+            checkInPointTarget != null
         ) {
             snapshot.copy(
                 nodes = snapshot.nodes + MapUiNodeSnapshot(
                     text = "打卡点",
+                    gestureTarget = true
+                )
+            )
+        } else if (
+            checkInButtonTarget != null
+        ) {
+            snapshot.copy(
+                nodes = snapshot.nodes + MapUiNodeSnapshot(
+                    text = "打卡",
                     gestureTarget = true
                 )
             )
@@ -148,15 +143,45 @@ object AmapMapAdapter {
         }
     }
 
+    // 仅在无真实流程标签且非首页时允许使用几何兜底。
+    internal fun shouldUseGeometryFallback(
+        snapshot: MapUiSnapshot
+    ): Boolean {
+        return !snapshot.hasAnyActionableLabel(AMAP_WORKFLOW_LABELS) &&
+                !snapshot.containsAnyLabelFragment(AMAP_HOME_MARKERS)
+    }
+
     // 执行高德 Profile 返回的单个动作。
     fun execute(
         rootNode: AccessibilityNodeInfo?,
         action: MapUiAction,
-        appVersion: String,
-        gestureTap: (Int, Int) -> Boolean
+        gestureTap: (Int, Int) -> Boolean,
+        checkInGestureTap: (Int, Int) -> Boolean,
+        dismissOverlay: () -> Boolean
     ): AccessibilityClickResult {
-        val gestureEnabled =
-            appVersion == AmapUiProfile.supportedAppVersion
+        if (action == MapUiAction.CLICK_HOME) {
+            val dismissed = dismissOverlay()
+            return AccessibilityClickResult(
+                success = dismissed,
+                message = if (dismissed) {
+                    "已关闭高德搜索覆盖页"
+                } else {
+                    "关闭高德搜索覆盖页失败"
+                }
+            )
+        }
+        if (action == MapUiAction.CLICK_FOOTPRINT) {
+            return MapUiGestureFallbackExecutor.execute(
+                selection = selectCheckInPointTarget(rootNode),
+                tap = gestureTap
+            )
+        }
+        if (action == MapUiAction.CLICK_CHECK_IN) {
+            return MapUiGestureFallbackExecutor.execute(
+                selection = selectCheckInButtonTarget(rootNode),
+                tap = checkInGestureTap
+            )
+        }
         val semanticResult =
             AccessibilityNodeActions.clickFirstMatchingLabel(
             rootNode = rootNode,
@@ -164,17 +189,10 @@ object AmapMapAdapter {
                 MapProvider.AMAP,
                 action
             ),
-            gestureTap = if (gestureEnabled) {
-                gestureTap
-            } else {
-                null
-            },
-            preferGesture = gestureEnabled
+            gestureTap = gestureTap,
+            preferGesture = false
         )
-        if (
-            semanticResult.success ||
-            !gestureEnabled
-        ) {
+        if (semanticResult.success) {
             return semanticResult
         }
         val fallbackSelection = when (action) {
@@ -188,6 +206,83 @@ object AmapMapAdapter {
             selection = fallbackSelection,
             tap = gestureTap
         )
+    }
+
+    // 深层扫描高德流程标签，避免整屏布局在分屏窗口中截断底部导航节点。
+    private fun collectDeepWorkflowNodes(
+        rootNode: AccessibilityNodeInfo?
+    ): List<MapUiNodeSnapshot> {
+        val result = mutableListOf<MapUiNodeSnapshot>()
+        collectDeepWorkflowNodes(
+            node = rootNode,
+            depth = 0,
+            nodeCounter = MutableNodeCounter(),
+            result = result
+        )
+        return result.distinct()
+    }
+
+    // 只保留匹配高德流程白名单的深层节点，控制扫描成本与快照体积。
+    private fun collectDeepWorkflowNodes(
+        node: AccessibilityNodeInfo?,
+        depth: Int,
+        nodeCounter: MutableNodeCounter,
+        result: MutableList<MapUiNodeSnapshot>
+    ) {
+        if (
+            node == null ||
+            depth > MAX_NODE_DEPTH ||
+            nodeCounter.count >= MAX_DEEP_WORKFLOW_NODE_COUNT
+        ) {
+            return
+        }
+        nodeCounter.count += 1
+
+        val text = node.text?.toString().orEmpty()
+        val description = node.contentDescription?.toString().orEmpty()
+        val viewId = node.viewIdResourceName.orEmpty()
+        val labels = listOf(text, description, viewId)
+        if (
+            labels.any { value ->
+                AMAP_DEEP_SCAN_LABELS.any { label ->
+                    value.trim().matchesUiLabel(label)
+                }
+            }
+        ) {
+            result += MapUiNodeSnapshot(
+                text = text,
+                description = description,
+                viewId = viewId,
+                clickable = node.hasExecutableAncestor()
+            )
+        }
+
+        for (childIndex in 0 until node.childCount) {
+            collectDeepWorkflowNodes(
+                node = node.getChild(childIndex),
+                depth = depth + 1,
+                nodeCounter = nodeCounter,
+                result = result
+            )
+        }
+    }
+
+    // 判断当前节点或有限层级祖先能否执行无障碍点击。
+    private fun AccessibilityNodeInfo.hasExecutableAncestor(): Boolean {
+        return BoundedAncestorFinder.findFirst(
+            startNode = this,
+            parentOf = { node -> node.parent },
+            matches = { node ->
+                node.isEnabled &&
+                        (
+                                node.isClickable ||
+                                        node.actionList.any { action ->
+                                            action.id ==
+                                                    AccessibilityNodeInfo.ACTION_CLICK
+                                        }
+                                )
+            }
+        ) != null
     }
 
     // 从高德窗口节点树选择当前版本“打卡点”的卡片相对目标。
@@ -344,7 +439,26 @@ object AmapMapAdapter {
         val candidateNodes = mutableListOf<AmapNodeSummary>()
     }
 
-    private const val MAX_NODE_DEPTH = 10
+    private data class MutableNodeCounter(
+        var count: Int = 0
+    )
+
+    private const val MAX_NODE_DEPTH = 32
     private const val MAX_TOTAL_NODE_COUNT = 300
+    private const val MAX_DEEP_WORKFLOW_NODE_COUNT = 2_000
     private const val MAX_CANDIDATE_NODE_COUNT = 20
+    private val AMAP_WORKFLOW_LABELS = listOf(
+        "打卡点",
+        "足迹",
+        "地点",
+        "开始打卡",
+        "打卡"
+    )
+    private val AMAP_HOME_MARKERS = listOf(
+        "maphome_searchbar",
+        "home_scroll_view",
+        "搜索框，输入文字"
+    )
+    private val AMAP_DEEP_SCAN_LABELS =
+        (AMAP_WORKFLOW_LABELS + listOf("我的")).distinct()
 }

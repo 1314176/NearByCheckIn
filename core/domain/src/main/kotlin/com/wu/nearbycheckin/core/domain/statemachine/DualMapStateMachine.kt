@@ -36,6 +36,11 @@ sealed interface DualMapEvent {
         val nowMillis: Long
     ) : DualMapEvent
 
+    data class ProviderResultReused(
+        val result: MapOperationResult,
+        val nowMillis: Long
+    ) : DualMapEvent
+
     data class RetryDue(
         val nowMillis: Long
     ) : DualMapEvent
@@ -100,6 +105,8 @@ class DualMapStateMachine(
                 handleExecutionStarted(state, event)
             is DualMapEvent.MapResultReceived ->
                 handleMapResult(state, event)
+            is DualMapEvent.ProviderResultReused ->
+                handleReusedResult(state, event)
             is DualMapEvent.RetryDue ->
                 handleRetryDue(state, event.nowMillis)
             is DualMapEvent.ManualResume ->
@@ -114,7 +121,7 @@ class DualMapStateMachine(
         }
     }
 
-    // 从排队状态生成第一个尚未成功的地图命令。
+    // 从排队状态同时生成百度和高德两条独立命令。
     private fun handleExecutionStarted(
         state: DualMapState,
         event: DualMapEvent.ExecutionStarted
@@ -123,48 +130,61 @@ class DualMapStateMachine(
             return DualMapTransition(state)
         }
 
-        return startProvider(
-            state = state,
-            provider = nextIncompleteProvider(state) ?: return completed(state),
-            nowMillis = event.nowMillis
+        val nextState = state.copy(
+            status = DualMapTransactionStatus.RUNNING,
+            baiduAttempts = if (state.baiduTerminal) {
+                state.baiduAttempts
+            } else {
+                state.baiduAttempts + 1
+            },
+            amapAttempts = if (state.amapTerminal) {
+                state.amapAttempts
+            } else {
+                state.amapAttempts + 1
+            },
+            retryProvider = null,
+            retryAtMillis = 0L,
+            blockedReason = ""
         )
+        val commands = MapProvider.entries.mapNotNull { provider ->
+            if (nextState.isTerminalFor(provider)) {
+                null
+            } else {
+                executeCommand(
+                    state = nextState,
+                    provider = provider,
+                    availableAtMillis = event.nowMillis
+                )
+            }
+        }
+        return if (commands.isEmpty()) {
+            settle(nextState)
+        } else {
+            DualMapTransition(
+                newState = nextState,
+                commands = commands
+            )
+        }
     }
 
-    // 幂等消费与当前运行端匹配的地图结果。
+    // 消费任意尚未终结地图端的结果并独立安排该端重试。
     private fun handleMapResult(
         state: DualMapState,
         event: DualMapEvent.MapResultReceived
     ): DualMapTransition {
-        val expectedProvider = when (state.status) {
-            DualMapTransactionStatus.BAIDU_RUNNING -> MapProvider.BAIDU
-            DualMapTransactionStatus.AMAP_RUNNING -> MapProvider.AMAP
-            else -> null
-        }
-
-        if (expectedProvider != event.result.provider) {
+        val provider = event.result.provider
+        if (
+            state.status in TERMINAL_STATUSES ||
+            state.isTerminalFor(provider)
+        ) {
             return DualMapTransition(state)
         }
 
-        val updatedState = when (event.result.provider) {
-            MapProvider.BAIDU -> state.copy(
-                baiduResult = event.result
-            )
-            MapProvider.AMAP -> state.copy(
-                amapResult = event.result
-            )
-        }
-
+        val updatedState = state.withResult(event.result)
         if (event.result.status.isSuccessful()) {
-            val nextProvider = nextIncompleteProvider(updatedState)
-            return if (nextProvider == null) {
-                completed(updatedState)
-            } else {
-                startProvider(
-                    state = updatedState,
-                    provider = nextProvider,
-                    nowMillis = event.nowMillis
-                )
-            }
+            return settle(
+                updatedState.withTerminal(provider, true)
+            )
         }
 
         if (event.result.status == MapOperationStatus.BLOCKED) {
@@ -174,41 +194,56 @@ class DualMapStateMachine(
             return DualMapTransition(
                 newState = updatedState.copy(
                     status = DualMapTransactionStatus.BLOCKED,
-                    retryProvider = event.result.provider,
+                    retryProvider = provider,
+                    retryAtMillis = 0L,
                     blockedReason = reason
                 ),
-                effects = listOf(
-                    DomainEffect.ReportBlocked(reason)
-                )
+                effects = listOf(DomainEffect.ReportBlocked(reason))
             )
         }
 
-        val attempts = updatedState.attemptsFor(event.result.provider)
+        val attempts = updatedState.attemptsFor(provider)
         if (attempts >= policy.maxAttemptsPerProvider) {
-            return DualMapTransition(
-                updatedState.copy(
-                    status = DualMapTransactionStatus.FAILED,
-                    retryProvider = null,
-                    retryAtMillis = 0L,
-                    blockedReason = event.result.failureMessage
-                )
+            return settle(
+                updatedState.withTerminal(provider, true)
             )
         }
 
-        val partialSuccess =
-            updatedState.resultFor(event.result.provider.other())
-                ?.status
-                ?.isSuccessful() == true
-        return DualMapTransition(
-            updatedState.copy(
-                status = if (partialSuccess) {
-                    DualMapTransactionStatus.PARTIAL_SUCCESS
-                } else {
-                    DualMapTransactionStatus.RETRY_WAIT
-                },
-                retryProvider = event.result.provider,
-                retryAtMillis = event.nowMillis + policy.retryDelayMillis
+        val nextState = updatedState
+            .withAttempts(provider, attempts + 1)
+            .copy(
+                status = runningStatus(updatedState),
+                retryProvider = null,
+                retryAtMillis = 0L,
+                blockedReason = ""
             )
+        return DualMapTransition(
+            newState = nextState,
+            commands = listOf(
+                executeCommand(
+                    state = nextState,
+                    provider = provider,
+                    availableAtMillis =
+                        event.nowMillis + policy.retryDelayMillis
+                )
+            )
+        )
+    }
+
+    // 把同一真实位置领导事务的高德终态复用给重复事务。
+    private fun handleReusedResult(
+        state: DualMapState,
+        event: DualMapEvent.ProviderResultReused
+    ): DualMapTransition {
+        if (
+            state.status in TERMINAL_STATUSES ||
+            state.isTerminalFor(event.result.provider)
+        ) {
+            return DualMapTransition(state)
+        }
+        return settle(
+            state.withResult(event.result)
+                .withTerminal(event.result.provider, true)
         )
     }
 
@@ -243,7 +278,9 @@ class DualMapStateMachine(
         }
 
         val provider = state.retryProvider
-            ?: nextIncompleteProvider(state)
+            ?: MapProvider.entries.firstOrNull { candidate ->
+                !state.isTerminalFor(candidate)
+            }
             ?: return completed(state)
         return startProvider(
             state = state.copy(blockedReason = ""),
@@ -259,31 +296,108 @@ class DualMapStateMachine(
         nowMillis: Long
     ): DualMapTransition {
         val attempt = state.attemptsFor(provider) + 1
-        val newState = when (provider) {
-            MapProvider.BAIDU -> state.copy(
-                status = DualMapTransactionStatus.BAIDU_RUNNING,
-                baiduAttempts = attempt,
+        val newState = state
+            .withAttempts(provider, attempt)
+            .withTerminal(provider, false)
+            .withoutResult(provider)
+            .copy(
+                status = runningStatus(state.withoutResult(provider)),
                 retryProvider = null,
-                retryAtMillis = 0L
+                retryAtMillis = 0L,
+                blockedReason = ""
             )
-            MapProvider.AMAP -> state.copy(
-                status = DualMapTransactionStatus.AMAP_RUNNING,
-                amapAttempts = attempt,
-                retryProvider = null,
-                retryAtMillis = 0L
-            )
-        }
 
         return DualMapTransition(
             newState = newState,
             commands = listOf(
-                DualMapCommand.ExecuteMapOperation(
+                executeCommand(
+                    state = newState,
                     provider = provider,
-                    attempt = attempt,
                     availableAtMillis = nowMillis
                 )
             )
         )
+    }
+
+    // 根据当前尝试次数构造单端持久化执行命令。
+    private fun executeCommand(
+        state: DualMapState,
+        provider: MapProvider,
+        availableAtMillis: Long
+    ): DualMapCommand.ExecuteMapOperation {
+        return DualMapCommand.ExecuteMapOperation(
+            provider = provider,
+            attempt = state.attemptsFor(provider),
+            availableAtMillis = availableAtMillis
+        )
+    }
+
+    // 根据双端是否均已终结收敛为完成、失败或继续运行状态。
+    private fun settle(state: DualMapState): DualMapTransition {
+        if (state.baiduTerminal && state.amapTerminal) {
+            return if (
+                state.baiduResult?.status?.isSuccessful() == true &&
+                state.amapResult?.status?.isSuccessful() == true
+            ) {
+                completed(state)
+            } else {
+                DualMapTransition(
+                    state.copy(
+                        status = DualMapTransactionStatus.FAILED,
+                        retryProvider = null,
+                        retryAtMillis = 0L,
+                        blockedReason = failedReason(state)
+                    )
+                )
+            }
+        }
+        val blockedProvider = MapProvider.entries.firstOrNull { provider ->
+            !state.isTerminalFor(provider) &&
+                    state.resultFor(provider)?.status ==
+                    MapOperationStatus.BLOCKED
+        }
+        if (blockedProvider != null) {
+            return DualMapTransition(
+                state.copy(
+                    status = DualMapTransactionStatus.BLOCKED,
+                    retryProvider = blockedProvider,
+                    blockedReason = state.resultFor(blockedProvider)
+                        ?.failureMessage
+                        .orEmpty()
+                )
+            )
+        }
+        return DualMapTransition(
+            state.copy(
+                status = runningStatus(state),
+                retryProvider = null,
+                retryAtMillis = 0L,
+                blockedReason = ""
+            )
+        )
+    }
+
+    // 返回当前并行事务的人类可读运行状态。
+    private fun runningStatus(state: DualMapState):
+            DualMapTransactionStatus {
+        val hasSuccess = MapProvider.entries.any { provider ->
+            state.resultFor(provider)?.status?.isSuccessful() == true
+        }
+        return if (hasSuccess) {
+            DualMapTransactionStatus.PARTIAL_SUCCESS
+        } else {
+            DualMapTransactionStatus.RUNNING
+        }
+    }
+
+    // 返回双端最终失败时优先展示的具体原因。
+    private fun failedReason(state: DualMapState): String {
+        return MapProvider.entries.firstNotNullOfOrNull { provider ->
+            state.resultFor(provider)
+                ?.takeIf { result -> !result.status.isSuccessful() }
+                ?.failureMessage
+                ?.takeIf(String::isNotBlank)
+        }.orEmpty()
     }
 
     // 将双端成功状态收敛为幂等终态。
@@ -299,15 +413,6 @@ class DualMapStateMachine(
                 DomainEffect.MarkPlaceCompleted
             )
         )
-    }
-
-    // 返回固定顺序中尚未成功的地图端。
-    private fun nextIncompleteProvider(
-        state: DualMapState
-    ): MapProvider? {
-        return PROVIDER_ORDER.firstOrNull { provider ->
-            state.resultFor(provider)?.status?.isSuccessful() != true
-        }
     }
 
     // 返回指定地图端已经发出的尝试次数。
@@ -328,11 +433,53 @@ class DualMapStateMachine(
         }
     }
 
-    // 返回另一个地图服务商。
-    private fun MapProvider.other(): MapProvider {
-        return when (this) {
-            MapProvider.BAIDU -> MapProvider.AMAP
-            MapProvider.AMAP -> MapProvider.BAIDU
+    // 返回指定地图端是否已经形成不可再重试的终态。
+    private fun DualMapState.isTerminalFor(provider: MapProvider): Boolean {
+        return when (provider) {
+            MapProvider.BAIDU -> baiduTerminal
+            MapProvider.AMAP -> amapTerminal
+        }
+    }
+
+    // 替换指定地图端最近一次结果。
+    private fun DualMapState.withResult(
+        result: MapOperationResult
+    ): DualMapState {
+        return when (result.provider) {
+            MapProvider.BAIDU -> copy(baiduResult = result)
+            MapProvider.AMAP -> copy(amapResult = result)
+        }
+    }
+
+    // 清除指定地图端旧结果以便人工恢复后重新识别。
+    private fun DualMapState.withoutResult(
+        provider: MapProvider
+    ): DualMapState {
+        return when (provider) {
+            MapProvider.BAIDU -> copy(baiduResult = null)
+            MapProvider.AMAP -> copy(amapResult = null)
+        }
+    }
+
+    // 更新指定地图端已经生成的命令尝试次数。
+    private fun DualMapState.withAttempts(
+        provider: MapProvider,
+        attempts: Int
+    ): DualMapState {
+        return when (provider) {
+            MapProvider.BAIDU -> copy(baiduAttempts = attempts)
+            MapProvider.AMAP -> copy(amapAttempts = attempts)
+        }
+    }
+
+    // 更新指定地图端是否已形成终态。
+    private fun DualMapState.withTerminal(
+        provider: MapProvider,
+        terminal: Boolean
+    ): DualMapState {
+        return when (provider) {
+            MapProvider.BAIDU -> copy(baiduTerminal = terminal)
+            MapProvider.AMAP -> copy(amapTerminal = terminal)
         }
     }
 
@@ -343,13 +490,14 @@ class DualMapStateMachine(
     }
 
     private companion object {
-        val PROVIDER_ORDER = listOf(
-            MapProvider.BAIDU,
-            MapProvider.AMAP
-        )
         val RETRYABLE_STATUSES = setOf(
             DualMapTransactionStatus.RETRY_WAIT,
             DualMapTransactionStatus.PARTIAL_SUCCESS
+        )
+        val TERMINAL_STATUSES = setOf(
+            DualMapTransactionStatus.COMPLETED,
+            DualMapTransactionStatus.FAILED,
+            DualMapTransactionStatus.CANCELLED
         )
     }
 }

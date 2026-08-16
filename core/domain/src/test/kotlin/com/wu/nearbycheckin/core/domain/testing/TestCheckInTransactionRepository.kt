@@ -11,12 +11,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.core.domain.coordinator.AmapRealLocationDeduplicationPolicy
 import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.core.model.AutomationLogEntry
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.core.model.AutomationSnapshot
+import com.wu.nearbycheckin.core.model.CheckInRecord
 import com.wu.nearbycheckin.core.model.MapCommand
 import com.wu.nearbycheckin.core.model.MapCommandStatus
+import com.wu.nearbycheckin.core.model.MapOperationEvidence
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.ProviderCheckInTask
+import com.wu.nearbycheckin.core.model.ProviderPlaceKey
+import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 
 
 internal class TestCheckInTransactionRepository(
@@ -42,16 +49,35 @@ internal class TestCheckInTransactionRepository(
         return updated
     }
 
-    // 领取第一条已经到期的待执行命令。
+    // 领取指定 Provider 第一条已经到期的待执行命令。
     override fun claimNextCommand(
+        provider: MapProvider,
         workerId: String,
         nowMillis: Long,
         leaseDurationMillis: Long
     ): MapCommand? {
         val snapshot = mutableSnapshot.value
         val commandIndex = snapshot.commands.indexOfFirst { command ->
-            command.status == MapCommandStatus.PENDING &&
-                command.availableAtMillis <= nowMillis
+            command.provider == provider &&
+                    (
+                            provider != MapProvider.AMAP ||
+                                    AmapRealLocationDeduplicationPolicy
+                                        .isLocationLeader(
+                                            snapshot = snapshot,
+                                            transactionId =
+                                                command.transactionId
+                                        )
+                            ) &&
+                    command.availableAtMillis <= nowMillis &&
+                    (
+                            command.status == MapCommandStatus.PENDING ||
+                                    (
+                                            command.status ==
+                                                MapCommandStatus.CLAIMED &&
+                                                    command.leaseUntilMillis <=
+                                                    nowMillis
+                                            )
+                            )
         }
         if (commandIndex < 0) {
             return null
@@ -67,6 +93,143 @@ internal class TestCheckInTransactionRepository(
             }
         )
         return claimed
+    }
+
+    // 领取指定 Provider 第一条到期且未完成的地点任务。
+    override fun claimNextProviderTask(
+        provider: MapProvider,
+        workerId: String,
+        nowMillis: Long,
+        leaseDurationMillis: Long
+    ): ProviderCheckInTask? {
+        val snapshot = mutableSnapshot.value
+        val visibleKeys = snapshot.providerCandidates
+            .asSequence()
+            .filter { candidate -> candidate.provider == provider }
+            .map { candidate -> candidate.toPlaceKey() }
+            .toSet()
+        val taskIndex = snapshot.providerTasks.indexOfFirst { task ->
+            task.provider == provider &&
+                    task.candidateKey in visibleKeys &&
+                    task.candidateKey !in snapshot.providerCompletedKeys &&
+                    task.availableAtMillis <= nowMillis &&
+                    (
+                            task.status == ProviderTaskStatus.QUEUED ||
+                                    task.status ==
+                                    ProviderTaskStatus.RETRY_WAIT ||
+                                    (
+                                            task.status ==
+                                                ProviderTaskStatus.ACTIVE &&
+                                                    task.leaseUntilMillis <=
+                                                    nowMillis
+                                            )
+                            )
+        }
+        if (taskIndex < 0) {
+            return null
+        }
+        val task = snapshot.providerTasks[taskIndex]
+        val claimed = task.copy(
+            status = ProviderTaskStatus.ACTIVE,
+            attempts = task.attempts + 1,
+            leaseOwner = workerId,
+            leaseUntilMillis = nowMillis + leaseDurationMillis,
+            updatedAtMillis = nowMillis
+        )
+        mutableSnapshot.value = snapshot.copy(
+            providerTasks = snapshot.providerTasks.toMutableList().apply {
+                this[taskIndex] = claimed
+            }
+        )
+        return claimed
+    }
+
+    // 完成或阻断指定 Provider 任务。
+    override fun completeProviderTask(
+        taskId: String,
+        status: ProviderTaskStatus,
+        evidence: MapOperationEvidence?,
+        errorMessage: String,
+        nowMillis: Long
+    ): Boolean {
+        val snapshot = mutableSnapshot.value
+        val taskIndex = snapshot.providerTasks.indexOfFirst { task ->
+            task.taskId == taskId
+        }
+        if (taskIndex < 0) {
+            return false
+        }
+        val task = snapshot.providerTasks[taskIndex]
+        val completed = task.copy(
+            status = status,
+            updatedAtMillis = nowMillis,
+            leaseOwner = "",
+            leaseUntilMillis = 0L,
+            lastError = errorMessage,
+            evidence = evidence
+        )
+        mutableSnapshot.value = snapshot.copy(
+            providerTasks = snapshot.providerTasks.toMutableList().apply {
+                this[taskIndex] = completed
+            },
+            providerCompletedKeys = if (
+                status == ProviderTaskStatus.COMPLETED ||
+                status == ProviderTaskStatus.SKIPPED
+            ) {
+                snapshot.providerCompletedKeys + completed.candidateKey
+            } else {
+                snapshot.providerCompletedKeys
+            },
+            records = if (status == ProviderTaskStatus.COMPLETED) {
+                snapshot.records + CheckInRecord(
+                    id = "provider-$taskId",
+                    poiUid = completed.candidateKey.serialized(),
+                    poiName = completed.candidate.name,
+                    address = completed.candidate.address,
+                    category = completed.provider.name,
+                    latitude = completed.candidate.latitude ?: 0.0,
+                    longitude = completed.candidate.longitude ?: 0.0,
+                    distanceMeters = 0,
+                    stayDurationMillis = 0L,
+                    checkInTimeMillis = nowMillis,
+                    provider = completed.provider,
+                    evidenceSummary = evidence?.message.orEmpty()
+                )
+            } else {
+                snapshot.records
+            }
+        )
+        return true
+    }
+
+    // 写入 Provider 永久完成键并关闭同键任务。
+    override fun markProviderCompleted(
+        key: ProviderPlaceKey,
+        evidence: MapOperationEvidence?,
+        nowMillis: Long
+    ): Boolean {
+        val snapshot = mutableSnapshot.value
+        if (key in snapshot.providerCompletedKeys) {
+            return false
+        }
+        mutableSnapshot.value = snapshot.copy(
+            providerCompletedKeys = snapshot.providerCompletedKeys + key,
+            providerTasks = snapshot.providerTasks.map { task ->
+                if (
+                    task.candidateKey == key &&
+                    task.status !in TERMINAL_PROVIDER_STATUSES
+                ) {
+                    task.copy(
+                        status = ProviderTaskStatus.COMPLETED,
+                        updatedAtMillis = nowMillis,
+                        evidence = evidence
+                    )
+                } else {
+                    task
+                }
+            }
+        )
+        return true
     }
 
     // 更新内存诊断状态。
@@ -136,5 +299,14 @@ internal class TestCheckInTransactionRepository(
     override fun clearAll(): Boolean {
         mutableSnapshot.value = AutomationSnapshot()
         return true
+    }
+
+    private companion object {
+        val TERMINAL_PROVIDER_STATUSES = setOf(
+            ProviderTaskStatus.COMPLETED,
+            ProviderTaskStatus.SKIPPED,
+            ProviderTaskStatus.FAILED,
+            ProviderTaskStatus.CANCELLED
+        )
     }
 }

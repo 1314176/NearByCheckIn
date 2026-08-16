@@ -13,6 +13,11 @@ import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.core.model.AutomationSnapshot
 import com.wu.nearbycheckin.core.model.MapCommand
+import com.wu.nearbycheckin.core.model.MapOperationEvidence
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.ProviderCheckInTask
+import com.wu.nearbycheckin.core.model.ProviderPlaceKey
+import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 
 
 /**
@@ -32,10 +37,35 @@ interface CheckInTransactionRepository {
 
     // 原子领取一个到期且尚未完成的地图命令。
     fun claimNextCommand(
+        provider: MapProvider,
         workerId: String,
         nowMillis: Long,
         leaseDurationMillis: Long
     ): MapCommand?
+
+    // 原子领取一个到期且未完成的 Provider 地点任务。
+    fun claimNextProviderTask(
+        provider: MapProvider,
+        workerId: String,
+        nowMillis: Long,
+        leaseDurationMillis: Long
+    ): ProviderCheckInTask?
+
+    // 原子完成或阻断 Provider 地点任务并保存结构化证据。
+    fun completeProviderTask(
+        taskId: String,
+        status: ProviderTaskStatus,
+        evidence: MapOperationEvidence?,
+        errorMessage: String,
+        nowMillis: Long
+    ): Boolean
+
+    // 原子写入 Provider 永久完成键并关闭所有同键未终结任务。
+    fun markProviderCompleted(
+        key: ProviderPlaceKey,
+        evidence: MapOperationEvidence?,
+        nowMillis: Long
+    ): Boolean
 
     // 原子更新无障碍诊断状态。
     fun updateDiagnostics(diagnostics: AccessibilityDiagnostics)

@@ -19,14 +19,13 @@ enum class MapUiSuccessCleanupDisposition {
 
 object MapUiSuccessCleanupPolicy {
 
-    // 判断当前动作是否是百度成功页的最佳努力清理。
+    // 判断当前动作是否是地图成功页的最佳努力清理。
     fun shouldExecute(
         provider: MapProvider,
         page: MapUiPage,
         action: MapUiAction?
     ): Boolean {
-        return provider == MapProvider.BAIDU &&
-                page == MapUiPage.SUCCESS &&
+        return page == MapUiPage.SUCCESS &&
                 action == MapUiAction.CLICK_DONE
     }
 

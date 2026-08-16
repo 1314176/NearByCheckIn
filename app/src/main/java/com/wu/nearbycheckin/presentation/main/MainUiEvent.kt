@@ -8,6 +8,7 @@ package com.wu.nearbycheckin.presentation.main
 
 
 import com.wu.nearbycheckin.core.domain.usecase.RecordQueryScope
+import com.wu.nearbycheckin.core.model.MapProvider
 
 
 /**
@@ -43,6 +44,10 @@ sealed interface MainUiEvent {
         val scope: RecordQueryScope
     ) : MainUiEvent
 
+    data class QueryProviderRecords(
+        val provider: MapProvider
+    ) : MainUiEvent
+
     data object DismissRecords : MainUiEvent
 
     data object ShowRuntimeLogs : MainUiEvent
@@ -56,6 +61,12 @@ sealed interface MainUiEvent {
     data object ConfirmClearAll : MainUiEvent
 
     data object DismissClearAll : MainUiEvent
+
+    data object RequestClearBaiduCompletion : MainUiEvent
+
+    data object ConfirmClearBaiduCompletion : MainUiEvent
+
+    data object DismissClearBaiduCompletion : MainUiEvent
 
     data object OpenAccessibilitySettings : MainUiEvent
 

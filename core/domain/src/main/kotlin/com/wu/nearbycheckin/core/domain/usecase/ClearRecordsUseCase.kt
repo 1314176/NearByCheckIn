@@ -10,6 +10,8 @@ package com.wu.nearbycheckin.core.domain.usecase
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 import com.wu.nearbycheckin.core.domain.repository.LegacyDataCleaner
 import com.wu.nearbycheckin.core.model.DualMapTransactionStatus
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 
 
 /**
@@ -19,6 +21,7 @@ enum class ClearScope {
     HISTORY,
     FAILED_TRANSACTIONS,
     PERMANENT_COMPLETION_KEYS,
+    BAIDU_PERMANENT_COMPLETION_KEYS,
     ALL
 }
 
@@ -56,6 +59,8 @@ class ClearRecordsUseCase(
                 clearFailedTransactions()
             ClearScope.PERMANENT_COMPLETION_KEYS ->
                 clearPermanentKeys()
+            ClearScope.BAIDU_PERMANENT_COMPLETION_KEYS ->
+                clearBaiduPermanentKeys()
             ClearScope.ALL ->
                 repository.clearAll() &&
                         legacyDataCleaner.clearLegacyData()
@@ -103,7 +108,34 @@ class ClearRecordsUseCase(
     // 只清理永久去重键并保留历史记录。
     private fun clearPermanentKeys(): Boolean {
         repository.updateSnapshot { snapshot ->
-            snapshot.copy(completedPlaceKeys = emptySet())
+            snapshot.copy(
+                completedPlaceKeys = emptySet(),
+                providerCompletedKeys = emptySet()
+            )
+        }
+        return true
+    }
+
+    // 清理百度永久完成键和终结任务，使百度候选可重新验收。
+    private fun clearBaiduPermanentKeys(): Boolean {
+        repository.updateSnapshot { snapshot ->
+            snapshot.copy(
+                providerCompletedKeys = snapshot.providerCompletedKeys
+                    .filterNot { key -> key.provider == MapProvider.BAIDU }
+                    .toSet(),
+                providerTasks = snapshot.providerTasks.filterNot { task ->
+                    task.provider == MapProvider.BAIDU &&
+                            task.status in setOf(
+                                ProviderTaskStatus.COMPLETED,
+                                ProviderTaskStatus.SKIPPED,
+                                ProviderTaskStatus.FAILED,
+                                ProviderTaskStatus.CANCELLED
+                            )
+                },
+                providerRuntime = snapshot.providerRuntime.copy(
+                    baiduListStale = true
+                )
+            )
         }
         return true
     }

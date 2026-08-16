@@ -53,10 +53,9 @@ class CruiseService : Service() {
         val container = (application as NearbyCheckInApplication)
             .appContainer
         transactionRepository = container.transactionRepository
-        val submitCandidateUseCase = container.submitCandidateUseCase
         discoveryController = CruiseDiscoveryController(
             context = applicationContext,
-            submitCandidateUseCase = submitCandidateUseCase,
+            providerCoordinator = container.providerAutomationCoordinator,
             onStatusChanged = ::updateNotification
         )
         if (!discoveryController.start()) {

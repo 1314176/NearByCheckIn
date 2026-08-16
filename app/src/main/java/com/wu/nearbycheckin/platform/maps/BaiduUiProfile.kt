@@ -9,8 +9,7 @@ package com.wu.nearbycheckin.platform.maps
 object BaiduUiProfile : ProviderUiProfile {
 
     override val packageName = "com.baidu.BaiduMap"
-    override val supportedAppVersion = "21.18.50"
-    override val profileVersion = "baidu_21_18_50_v1"
+    override val profileVersion = "baidu_semantic_v2"
 
     // 按阻断、成功、弹窗、历史页、打卡页和入口页的顺序规划动作。
     override fun decide(snapshot: MapUiSnapshot): MapUiDecision {

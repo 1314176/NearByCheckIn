@@ -11,8 +11,6 @@ import com.wu.nearbycheckin.platform.maps.MapUiAction
 import com.wu.nearbycheckin.platform.maps.MapUiPage
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MapUiExecutionPolicyTest {
@@ -77,29 +75,6 @@ class MapUiExecutionPolicyTest {
                 page = MapUiPage.HOME,
                 actionCount = 12,
                 repeatedUnknownCount = 0
-            )
-        )
-    }
-
-    // 验证应用版本只接受完整精确匹配。
-    @Test
-    fun requiresExactSupportedAppVersion() {
-        assertTrue(
-            policy.isSupportedAppVersion(
-                appVersion = "21.18.50",
-                supportedAppVersion = "21.18.50"
-            )
-        )
-        assertFalse(
-            policy.isSupportedAppVersion(
-                appVersion = "",
-                supportedAppVersion = "21.18.50"
-            )
-        )
-        assertFalse(
-            policy.isSupportedAppVersion(
-                appVersion = "21.18.50.1",
-                supportedAppVersion = "21.18.50"
             )
         )
     }

@@ -113,7 +113,9 @@ class MainActivity : ComponentActivity() {
                 stopCruiseUseCase = container.stopCruiseUseCase,
                 queryRecordsUseCase = container.queryRecordsUseCase,
                 clearRecordsUseCase = container.clearRecordsUseCase,
-                coordinator = container.checkInCoordinator
+                coordinator = container.checkInCoordinator,
+                providerCoordinator =
+                    container.providerAutomationCoordinator
             )
         )[MainViewModel::class.java]
         pendingBaiduPaneReplacement =

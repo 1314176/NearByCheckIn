@@ -32,18 +32,18 @@ import com.wu.nearbycheckin.platform.maps.formatMapUiLabelDiagnostics
 
 
 /**
- * 串行领取地图命令、调用 Adapter 并回写结果证据。
+ * 串行消费单个 Provider 队列、调用 Adapter 并回写结果证据。
  */
 class DualMapCommandWorker(
     private val service: AccessibilityService,
     private val coordinator: CheckInCoordinator,
+    private val provider: MapProvider,
+    private val gestureTapDispatcher: AccessibilityGestureTapDispatcher,
     private val onStatusChanged: (String) -> Unit
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resultProbe = MapOperationResultProbe(service)
-    private val gestureTapDispatcher =
-        AccessibilityGestureTapDispatcher(service)
     private val executionPolicy = MapUiExecutionPolicy()
     private val windowRecoveryPolicy =
         MapWindowRecoveryPolicy()
@@ -80,21 +80,20 @@ class DualMapCommandWorker(
         activeAmapCheckInStage = AmapCheckInStage.NONE
     }
 
-    // 在第二次高德打卡已提交后把瞬时频率限制提示回写为成功结果。
+    // 在高德首次打卡已提交后把瞬时频率限制提示回写为成功结果。
     fun onAmapRateLimitDetected(message: String) {
         val command = activeCommand ?: return
         if (
             command.provider != MapProvider.AMAP ||
-            activeAmapCheckInStage !=
-            AmapCheckInStage.SECOND_CLICK_SUBMITTED
+            activeAmapCheckInStage == AmapCheckInStage.NONE
         ) {
             return
         }
         val decision = MapUiDecision(
             page = MapUiPage.RATE_LIMITED,
             action = MapUiAction.WAIT,
-            evidence = "第二次点击触发频率限制",
-            reason = "第一次打卡已生效"
+            evidence = "打卡提交后触发频率限制",
+            reason = "高德打卡已生效"
         )
         val profileEvidence = appendBoundedWorkerEvidence(
             structuredEvidence = buildMapUiEvidence(
@@ -128,7 +127,10 @@ class DualMapCommandWorker(
             return
         }
 
-        val command = coordinator.claimNextCommand(WORKER_ID)
+        val command = coordinator.claimNextCommand(
+            provider = provider,
+            workerId = workerId
+        )
             ?: return
         activeCommand = command
         activeStartedAtMillis = System.currentTimeMillis()
@@ -197,46 +199,6 @@ class DualMapCommandWorker(
             rootNode = rootNode,
             appVersion = currentAppVersion
         )
-        if (
-            !executionPolicy.isSupportedAppVersion(
-                appVersion = currentAppVersion,
-                supportedAppVersion = profile.supportedAppVersion
-            )
-        ) {
-            val unsupportedDecision = MapUiDecision(
-                page = MapUiPage.UNKNOWN,
-                action = null,
-                evidence = "应用版本不受支持",
-                reason = "应用版本必须完整匹配"
-            )
-            val unsupportedEvidence = buildProfileEvidence(
-                provider = command.provider,
-                snapshot = snapshot,
-                profile = profile,
-                decision = unsupportedDecision
-            )
-            reportStructuredStatus(
-                event = "页面识别",
-                structuredEvidence = unsupportedEvidence
-            )
-            finishCommand(
-                command = command,
-                result = createOperationResult(
-                    command = command,
-                    status = MapOperationStatus.UNSUPPORTED,
-                    startedAtMillis = startedAtMillis,
-                    failureCode =
-                        "${command.provider.name}_VERSION_UNSUPPORTED",
-                    failureMessage =
-                        "${command.provider.displayName()}地图版本不受支持",
-                    evidenceText = appendProbeEvidence(
-                        profileEvidence = unsupportedEvidence,
-                        packageName = packageName
-                    )
-                )
-            )
-            return
-        }
 
         val decision = profile.decide(snapshot)
         val fingerprint = snapshot.fingerprint()
@@ -289,12 +251,12 @@ class DualMapCommandWorker(
                 outcome = MapUiExecutionOutcome.SUCCESS,
                 decision = decision.copy(
                     evidence =
-                        "第二次点击触发频率限制，第一次打卡已生效"
+                        "打卡提交后触发频率限制，高德打卡已生效"
                 ),
                 profileEvidence = appendBoundedWorkerEvidence(
                     structuredEvidence = profileEvidence,
                     key = "followUp",
-                    value = "second_click_rate_limited_success"
+                    value = "submitted_click_rate_limited_success"
                 )
             )
             return
@@ -311,7 +273,6 @@ class DualMapCommandWorker(
                 command = command,
                 startedAtMillis = startedAtMillis,
                 rootNode = rootNode,
-                currentAppVersion = currentAppVersion,
                 decision = decision,
                 profileEvidence = profileEvidence,
                 fingerprint = fingerprint,
@@ -376,13 +337,22 @@ class DualMapCommandWorker(
 
         val clickResult = command.provider.execute(
             rootNode = rootNode,
-            action = action,
-            appVersion = currentAppVersion
+            action = action
         )
+        val clickResultMessage = if (
+            clickResult.success &&
+            command.provider == MapProvider.AMAP &&
+            action == MapUiAction.CLICK_CHECK_IN
+        ) {
+            "${clickResult.message}，原子双击间隔=" +
+                    "${AmapCheckInFollowUpPolicy.SECOND_CLICK_DELAY_MILLIS}ms"
+        } else {
+            clickResult.message
+        }
         val actionEvidence = appendBoundedWorkerEvidence(
             structuredEvidence = profileEvidence,
             key = "result",
-            value = clickResult.message
+            value = clickResultMessage
         )
         reportStructuredStatus(
             event = "动作执行",
@@ -417,9 +387,7 @@ class DualMapCommandWorker(
             action == MapUiAction.CLICK_CHECK_IN
         ) {
             AmapCheckInFollowUpPolicy
-                .nextStageAfterSuccessfulCheckIn(
-                    amapCheckInStage
-                )
+                .stageAfterAtomicDoubleClick()
         } else {
             amapCheckInStage
         }
@@ -429,13 +397,6 @@ class DualMapCommandWorker(
                     command.provider == MapProvider.BAIDU &&
                             action == MapUiAction.CLICK_CHECK_IN
                     )
-        val nextDelayMillis =
-            AmapCheckInFollowUpPolicy
-                .delayBeforeNextLoopMillis(
-                    stage = nextAmapCheckInStage,
-                    defaultDelayMillis =
-                        MAP_OPERATION_STEP_DELAY_MILLIS
-                )
         mainHandler.postDelayed(
             {
                 executeNextAction(
@@ -451,7 +412,7 @@ class DualMapCommandWorker(
                         nextBaiduCheckInSubmitted
                 )
             },
-            nextDelayMillis
+            MAP_OPERATION_STEP_DELAY_MILLIS
         )
     }
 
@@ -493,7 +454,6 @@ class DualMapCommandWorker(
         command: MapCommand,
         startedAtMillis: Long,
         rootNode: AccessibilityNodeInfo,
-        currentAppVersion: String,
         decision: MapUiDecision,
         profileEvidence: String,
         fingerprint: String,
@@ -504,8 +464,7 @@ class DualMapCommandWorker(
         val action = requireNotNull(decision.action)
         val cleanupResult = command.provider.execute(
             rootNode = rootNode,
-            action = action,
-            appVersion = currentAppVersion
+            action = action
         )
         val cleanupEvidence =
             MapUiSuccessCleanupPolicy.appendEvidence(
@@ -518,7 +477,12 @@ class DualMapCommandWorker(
         )
         when (
             MapUiSuccessCleanupPolicy.dispositionAfter(
-                checkInSubmitted = baiduCheckInSubmitted,
+                checkInSubmitted = baiduCheckInSubmitted ||
+                        (
+                                command.provider == MapProvider.AMAP &&
+                                        amapCheckInStage !=
+                                        AmapCheckInStage.NONE
+                                ),
                 clickResult = cleanupResult
             )
         ) {
@@ -560,7 +524,7 @@ class DualMapCommandWorker(
                         status = MapOperationStatus.FAILED,
                         startedAtMillis = startedAtMillis,
                         failureCode =
-                            "BAIDU_STALE_SUCCESS_CLEANUP_FAILED",
+                            "${command.provider.name}_STALE_SUCCESS_CLEANUP_FAILED",
                         failureMessage = cleanupResult.message,
                         evidenceText = appendProbeEvidence(
                             profileEvidence = cleanupEvidence,
@@ -580,7 +544,31 @@ class DualMapCommandWorker(
         decision: MapUiDecision,
         profileEvidence: String
     ) {
-        val failureCode = when (outcome) {
+        val probeResult = resultProbe.probe(
+            command.provider.packageName()
+        )
+        val effectiveOutcome = if (
+            command.provider == MapProvider.AMAP &&
+            activeAmapCheckInStage != AmapCheckInStage.NONE &&
+            probeResult.status == MapOperationProbeStatus.SUCCESS &&
+            outcome in listOf(
+                MapUiExecutionOutcome.UNSUPPORTED,
+                MapUiExecutionOutcome.TIMEOUT
+            )
+        ) {
+            MapUiExecutionOutcome.SUCCESS
+        } else {
+            outcome
+        }
+        val effectiveDecision = if (effectiveOutcome != outcome) {
+            decision.copy(
+                evidence = "高德结果层经纬度与日期证据确认打卡成功",
+                reason = ""
+            )
+        } else {
+            decision
+        }
+        val failureCode = when (effectiveOutcome) {
             MapUiExecutionOutcome.SUCCESS,
             MapUiExecutionOutcome.ALREADY_COMPLETED -> ""
             MapUiExecutionOutcome.BLOCKED ->
@@ -595,14 +583,14 @@ class DualMapCommandWorker(
             command = command,
             result = createOperationResult(
                 command = command,
-                status = outcome.toOperationStatus(),
+                status = effectiveOutcome.toOperationStatus(),
                 startedAtMillis = startedAtMillis,
                 failureCode = failureCode,
-                failureMessage = decision.reason
-                    .ifBlank { decision.evidence },
-                evidenceText = appendProbeEvidence(
+                failureMessage = effectiveDecision.reason
+                    .ifBlank { effectiveDecision.evidence },
+                evidenceText = appendProbeEvidenceValue(
                     profileEvidence = profileEvidence,
-                    packageName = command.provider.packageName()
+                    probeEvidence = probeResult.evidenceText
                 )
             )
         )
@@ -632,14 +620,12 @@ class DualMapCommandWorker(
     // 通过地图服务商 Adapter 执行 Profile 返回的单个动作。
     private fun MapProvider.execute(
         rootNode: AccessibilityNodeInfo?,
-        action: MapUiAction,
-        appVersion: String
+        action: MapUiAction
     ) = when (this) {
         MapProvider.BAIDU ->
             BaiduMapAdapter.execute(
                 rootNode = rootNode,
                 action = action,
-                appVersion = appVersion,
                 gestureTap = gestureTapDispatcher::tap,
                 dismissSharePanel = {
                     service.performGlobalAction(
@@ -651,8 +637,28 @@ class DualMapCommandWorker(
             AmapMapAdapter.execute(
                 rootNode = rootNode,
                 action = action,
-                appVersion = appVersion,
-                gestureTap = gestureTapDispatcher::tap
+                gestureTap = { x, y ->
+                    gestureTapDispatcher.tapForPackage(
+                        x = x,
+                        y = y,
+                        packageName = AMAP_PACKAGE_NAME
+                    )
+                },
+                checkInGestureTap = { x, y ->
+                    gestureTapDispatcher.tapTwiceForPackage(
+                        x = x,
+                        y = y,
+                        packageName = AMAP_PACKAGE_NAME,
+                        secondTapDelayMillis =
+                            AmapCheckInFollowUpPolicy
+                                .SECOND_CLICK_DELAY_MILLIS
+                    )
+                },
+                dismissOverlay = {
+                    service.performGlobalAction(
+                        AccessibilityService.GLOBAL_ACTION_BACK
+                    )
+                }
             )
     }
 
@@ -724,6 +730,17 @@ class DualMapCommandWorker(
         packageName: String
     ): String {
         val probeEvidence = resultProbe.probe(packageName).evidenceText
+        return appendProbeEvidenceValue(
+            profileEvidence = profileEvidence,
+            probeEvidence = probeEvidence
+        )
+    }
+
+    // 把已读取的 Probe 证据追加到结构化结果，避免瞬时结果层被重复读取丢失。
+    private fun appendProbeEvidenceValue(
+        profileEvidence: String,
+        probeEvidence: String
+    ): String {
         return appendBoundedWorkerEvidence(
             structuredEvidence = profileEvidence,
             key = "probeEvidence",
@@ -831,19 +848,10 @@ class DualMapCommandWorker(
         }
     }
 
-    // 返回地图服务商对应的中文名称。
-    private fun MapProvider.displayName(): String {
-        return when (this) {
-            MapProvider.BAIDU -> "百度"
-            MapProvider.AMAP -> "高德"
-        }
-    }
-
     private companion object {
-        const val WORKER_ID = "dual_map_accessibility_worker"
         const val BAIDU_MAP_PACKAGE_NAME = "com.baidu.BaiduMap"
         const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
-        const val DUAL_MAP_FLOW_VERSION = "dual_map_v4"
+        const val DUAL_MAP_FLOW_VERSION = "dual_map_v5_parallel"
         const val COMMAND_POLL_INTERVAL_MILLIS = 500L
         const val MAP_OPERATION_INITIAL_DELAY_MILLIS = 4_000L
         const val MAP_OPERATION_STEP_DELAY_MILLIS = 1_500L
@@ -858,4 +866,7 @@ class DualMapCommandWorker(
             )
         )
     }
+
+    private val workerId =
+        "dual_map_accessibility_worker_${provider.name.lowercase()}"
 }

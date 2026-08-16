@@ -38,6 +38,28 @@ class MapOperationResultProbeTest {
         )
     }
 
+    // 验证高德结果层的经纬度与日期组合可确认打卡成功。
+    @Test
+    fun recognizesAmapMemoryResultEvidence() {
+        assertEquals(
+            MapOperationProbeStatus.SUCCESS,
+            resolveMapOperationProbeStatus(
+                "31.3°N 121.4°E 阳城路353号 2026.08.02"
+            )
+        )
+    }
+
+    // 验证普通坐标文本缺少日期时不会误判为打卡成功。
+    @Test
+    fun ignoresCoordinatesWithoutAmapResultDate() {
+        assertEquals(
+            MapOperationProbeStatus.UNKNOWN,
+            resolveMapOperationProbeStatus(
+                "当前位置 31.3°N 121.4°E"
+            )
+        )
+    }
+
     // 验证精确已完成标记仍可作为兼容证据识别。
     @Test
     fun recognizesExactAlreadyCompletedMarkers() {

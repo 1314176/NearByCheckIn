@@ -46,15 +46,6 @@ class MapUiExecutionPolicy(
         }
     }
 
-    // 仅接受非空且与 Profile 声明完全一致的应用版本。
-    fun isSupportedAppVersion(
-        appVersion: String,
-        supportedAppVersion: String
-    ): Boolean {
-        return appVersion.isNotEmpty() &&
-                appVersion == supportedAppVersion
-    }
-
     // 仅在相同未知页面指纹连续出现时累计重复次数。
     fun repeatedUnknownCountFor(
         page: MapUiPage,

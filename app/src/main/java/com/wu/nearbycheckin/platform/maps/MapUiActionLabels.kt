@@ -37,10 +37,14 @@ object MapUiActionLabels {
                 listOf("完成")
             MapProvider.AMAP to MapUiAction.CLICK_MINE ->
                 listOf("我的")
+            MapProvider.AMAP to MapUiAction.CLICK_FOOTPRINT ->
+                listOf("足迹")
             MapProvider.AMAP to MapUiAction.CLICK_CHECK_IN_POINT ->
-                listOf("打卡点")
+                listOf("打卡点", "地点")
             MapProvider.AMAP to MapUiAction.CLICK_CHECK_IN ->
                 listOf("开始打卡", "打卡")
+            MapProvider.AMAP to MapUiAction.CLICK_DONE ->
+                listOf("收下")
             else -> emptyList()
         }
     }

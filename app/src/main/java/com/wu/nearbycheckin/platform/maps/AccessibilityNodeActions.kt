@@ -198,6 +198,6 @@ object AccessibilityNodeActions {
         )
     }
 
-    private const val MAX_SEARCH_DEPTH = 12
+    private const val MAX_SEARCH_DEPTH = 32
     private const val MAX_MATCHING_NODE_COUNT = 20
 }

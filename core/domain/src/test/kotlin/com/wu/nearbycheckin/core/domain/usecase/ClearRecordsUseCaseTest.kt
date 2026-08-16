@@ -16,6 +16,10 @@ import com.wu.nearbycheckin.core.domain.repository.LegacyDataCleaner
 import com.wu.nearbycheckin.core.domain.testing.TestCheckInTransactionRepository
 import com.wu.nearbycheckin.core.model.AutomationSnapshot
 import com.wu.nearbycheckin.core.model.CheckInRecord
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.ProviderCheckInTask
+import com.wu.nearbycheckin.core.model.ProviderPlaceCandidate
+import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 
 
 class ClearRecordsUseCaseTest {
@@ -63,6 +67,79 @@ class ClearRecordsUseCaseTest {
         assertFalse(result.confirmationRequired)
         assertEquals(AutomationSnapshot(), repository.currentSnapshot())
         assertTrue(legacyCleaner.called)
+    }
+
+    // 验证百度定向清理保留高德键和全部历史记录。
+    @Test
+    fun clearsOnlyBaiduCompletionKeysAndTerminalTasks() {
+        val baiduCandidate = providerCandidate(MapProvider.BAIDU, "百度地点")
+        val amapCandidate = providerCandidate(MapProvider.AMAP, "高德地点")
+        val initial = snapshotWithRecord().copy(
+            providerCompletedKeys = setOf(
+                baiduCandidate.toPlaceKey(),
+                amapCandidate.toPlaceKey()
+            ),
+            providerTasks = listOf(
+                providerTask(baiduCandidate),
+                providerTask(amapCandidate)
+            )
+        )
+        val repository = TestCheckInTransactionRepository(initial)
+        val useCase = ClearRecordsUseCase(
+            repository,
+            RecordingLegacyDataCleaner()
+        )
+
+        val result = useCase(
+            ClearScope.BAIDU_PERMANENT_COMPLETION_KEYS,
+            confirmed = true
+        )
+
+        val updated = repository.currentSnapshot()
+        assertTrue(result.cleared)
+        assertEquals(1, updated.records.size)
+        assertEquals(
+            setOf(amapCandidate.toPlaceKey()),
+            updated.providerCompletedKeys
+        )
+        assertEquals(listOf(MapProvider.AMAP), updated.providerTasks.map {
+            task -> task.provider
+        })
+    }
+
+    // 创建 Provider 候选测试数据。
+    private fun providerCandidate(
+        provider: MapProvider,
+        name: String
+    ): ProviderPlaceCandidate {
+        return ProviderPlaceCandidate(
+            provider = provider,
+            name = name,
+            address = "测试地址",
+            distanceText = "10米",
+            completed = false,
+            fingerprint = "$provider-$name",
+            observedAtMillis = 1_000L,
+            stableHint = name
+        )
+    }
+
+    // 创建已完成 Provider 任务测试数据。
+    private fun providerTask(
+        candidate: ProviderPlaceCandidate
+    ): ProviderCheckInTask {
+        return ProviderCheckInTask(
+            taskId = candidate.name,
+            sessionId = "session",
+            provider = candidate.provider,
+            candidate = candidate,
+            candidateKey = candidate.toPlaceKey(),
+            status = ProviderTaskStatus.COMPLETED,
+            attempts = 1,
+            commandId = "command",
+            createdAtMillis = 1_000L,
+            updatedAtMillis = 1_000L
+        )
     }
 
     // 构造包含一条记录的非空快照。

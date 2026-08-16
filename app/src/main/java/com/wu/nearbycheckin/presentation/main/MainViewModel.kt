@@ -26,10 +26,12 @@ import com.wu.nearbycheckin.core.domain.usecase.StartCruiseResult
 import com.wu.nearbycheckin.core.domain.usecase.StartCruiseUseCase
 import com.wu.nearbycheckin.core.domain.usecase.StopCruiseUseCase
 import com.wu.nearbycheckin.core.domain.coordinator.CheckInCoordinator
+import com.wu.nearbycheckin.core.domain.coordinator.ProviderAutomationCoordinator
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.core.model.AutomationSessionStatus
 import com.wu.nearbycheckin.core.model.AutomationSnapshot
 import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 
 
@@ -42,7 +44,8 @@ class MainViewModel(
     private val stopCruiseUseCase: StopCruiseUseCase,
     private val queryRecordsUseCase: QueryRecordsUseCase,
     private val clearRecordsUseCase: ClearRecordsUseCase,
-    private val coordinator: CheckInCoordinator
+    private val coordinator: CheckInCoordinator,
+    private val providerCoordinator: ProviderAutomationCoordinator
 ) : ViewModel() {
 
     private val mutableUiState = MutableStateFlow(MainUiState())
@@ -112,6 +115,8 @@ class MainViewModel(
             }
             is MainUiEvent.QueryRecords ->
                 showRecords(event.scope)
+            is MainUiEvent.QueryProviderRecords ->
+                showProviderRecords(event.provider)
             MainUiEvent.DismissRecords -> {
                 mutableUiState.value = mutableUiState.value.copy(
                     showRecordsDialog = false
@@ -148,10 +153,24 @@ class MainViewModel(
                     showClearRecordsDialog = false
                 )
             }
+            MainUiEvent.RequestClearBaiduCompletion -> {
+                mutableUiState.value = mutableUiState.value.copy(
+                    showClearBaiduCompletionDialog = true
+                )
+            }
+            MainUiEvent.ConfirmClearBaiduCompletion ->
+                clearBaiduCompletion()
+            MainUiEvent.DismissClearBaiduCompletion -> {
+                mutableUiState.value = mutableUiState.value.copy(
+                    showClearBaiduCompletionDialog = false
+                )
+            }
             MainUiEvent.OpenAccessibilitySettings ->
                 sendEffect(MainUiEffect.OpenAccessibilitySettings)
             MainUiEvent.ResumeBlockedTransaction -> {
-                val resumed = coordinator.manualResume()
+                val resumed = providerCoordinator.manualResume(
+                    MapProvider.BAIDU
+                ) || coordinator.manualResume()
                 emitEffect(
                     if (resumed) {
                         "已恢复被阻断的事务"
@@ -257,6 +276,20 @@ class MainViewModel(
         )
     }
 
+    // 按 Provider 筛选并展示结构化打卡记录和结果证据。
+    private fun showProviderRecords(provider: MapProvider) {
+        mutableUiState.value = mutableUiState.value.copy(
+            displayedRecords = repository.currentSnapshot().records
+                .filter { record -> record.provider == provider }
+                .sortedByDescending { record -> record.checkInTimeMillis },
+            recordsDialogTitle = when (provider) {
+                MapProvider.BAIDU -> "百度地图打卡记录"
+                MapProvider.AMAP -> "高德地图打卡记录"
+            },
+            showRecordsDialog = true
+        )
+    }
+
     // 读取最新持久化日志并按时间倒序打开日志对话框。
     private fun showRuntimeLogs() {
         mutableUiState.value = mutableUiState.value.copy(
@@ -281,6 +314,24 @@ class MainViewModel(
                 "本地记录和双地图事务记录已清空"
             } else {
                 "本地记录清空失败"
+            }
+        )
+    }
+
+    // 二次确认后只清除百度完成键和终结任务。
+    private fun clearBaiduCompletion() {
+        val result = clearRecordsUseCase(
+            scope = ClearScope.BAIDU_PERMANENT_COMPLETION_KEYS,
+            confirmed = true
+        )
+        mutableUiState.value = mutableUiState.value.copy(
+            showClearBaiduCompletionDialog = false
+        )
+        emitEffect(
+            if (result.cleared) {
+                "百度完成键已清空，候选将重新读取"
+            } else {
+                "百度完成键清空失败"
             }
         )
     }
@@ -310,20 +361,35 @@ class MainViewModel(
         snapshot: AutomationSnapshot
     ): MainUiState {
         val transaction = snapshot.activeTransaction
+        val providerTask = snapshot.activeProviderTask
         return copy(
             isCruiseRunning =
                 snapshot.session?.status ==
                         AutomationSessionStatus.RUNNING,
             diagnostics = snapshot.diagnostics,
             automationStatus = snapshot.automationStatus,
-            activePlaceName = transaction?.candidate?.name.orEmpty(),
+            activePlaceName = providerTask?.candidate?.name
+                ?: transaction?.candidate?.name.orEmpty(),
             transactionStatus =
                 transaction?.state?.status?.name.orEmpty(),
             baiduStatus =
                 transaction?.state?.baiduResult?.status.toStatusText(),
             amapStatus =
                 transaction?.state?.amapResult?.status.toStatusText(),
-            queueSize = snapshot.queuedTransactions.size,
+            queueSize = snapshot.providerQueue(MapProvider.BAIDU).size,
+            baiduProviderState = snapshot.providerRuntime.baiduState.name,
+            baiduCandidateCount = snapshot.providerCandidates.count {
+                candidate -> candidate.provider == MapProvider.BAIDU
+            },
+            baiduCompletedCount = snapshot.providerCompletedKeys.count {
+                key -> key.provider == MapProvider.BAIDU
+            },
+            baiduListFingerprint =
+                snapshot.providerRuntime.baiduListFingerprint,
+            activeProviderCandidate = providerTask?.candidate?.name.orEmpty(),
+            pluginPage = snapshot.providerRuntime.baiduPluginPage,
+            pluginAction = snapshot.providerRuntime.baiduPluginAction,
+            pluginEvidence = snapshot.providerRuntime.baiduPluginEvidence,
             totalRecordCount = snapshot.records.size,
             displayedLogs = if (showLogsDialog) {
                 snapshot.runtimeLogs.asReversed()
@@ -366,7 +432,8 @@ class MainViewModelFactory(
     private val stopCruiseUseCase: StopCruiseUseCase,
     private val queryRecordsUseCase: QueryRecordsUseCase,
     private val clearRecordsUseCase: ClearRecordsUseCase,
-    private val coordinator: CheckInCoordinator
+    private val coordinator: CheckInCoordinator,
+    private val providerCoordinator: ProviderAutomationCoordinator
 ) : ViewModelProvider.Factory {
 
     // 创建 MainViewModel 并拒绝未知类型。
@@ -384,7 +451,8 @@ class MainViewModelFactory(
             stopCruiseUseCase = stopCruiseUseCase,
             queryRecordsUseCase = queryRecordsUseCase,
             clearRecordsUseCase = clearRecordsUseCase,
-            coordinator = coordinator
+            coordinator = coordinator,
+            providerCoordinator = providerCoordinator
         ) as T
     }
 }

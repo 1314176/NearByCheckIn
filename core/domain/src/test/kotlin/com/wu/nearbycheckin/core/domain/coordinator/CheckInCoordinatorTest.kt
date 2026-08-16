@@ -27,7 +27,7 @@ import com.wu.nearbycheckin.core.model.NearbyPlaceCandidate
 
 
 /**
- * 验证协调器串行命令、部分成功重试和永久完成写入。
+ * 验证协调器独立 Provider 队列、真实位置去重和永久完成写入。
  */
 class CheckInCoordinatorTest {
 
@@ -56,7 +56,10 @@ class CheckInCoordinatorTest {
         coordinator.startSession()
         coordinator.submitCandidate(candidate(clock.nowMillis))
         val baiduCommand = checkNotNull(
-            coordinator.claimNextCommand("worker")
+            coordinator.claimNextCommand(
+                provider = MapProvider.BAIDU,
+                workerId = "baidu-worker"
+            )
         )
         assertEquals(MapProvider.BAIDU, baiduCommand.provider)
         assertTrue(
@@ -70,7 +73,10 @@ class CheckInCoordinatorTest {
         )
 
         val amapCommand = checkNotNull(
-            coordinator.claimNextCommand("worker")
+            coordinator.claimNextCommand(
+                provider = MapProvider.AMAP,
+                workerId = "amap-worker"
+            )
         )
         assertEquals(MapProvider.AMAP, amapCommand.provider)
         assertTrue(
@@ -101,7 +107,10 @@ class CheckInCoordinatorTest {
 
         clock.nowMillis += 5_000L
         val retryCommand = checkNotNull(
-            coordinator.claimNextCommand("worker")
+            coordinator.claimNextCommand(
+                provider = MapProvider.AMAP,
+                workerId = "amap-worker"
+            )
         )
         assertEquals(MapProvider.AMAP, retryCommand.provider)
         assertEquals(2, retryCommand.attempt)
@@ -122,11 +131,126 @@ class CheckInCoordinatorTest {
         assertEquals(1, snapshot.records.size)
     }
 
+    // 验证高德重试期间百度 Worker 仍可领取下一地点命令。
+    @Test
+    fun baiduQueueContinuesWhileAmapIsRetrying() {
+        val fixture = coordinatorFixture()
+        fixture.coordinator.startSession()
+        fixture.coordinator.submitCandidate(
+            candidate(
+                nowMillis = fixture.clock.nowMillis,
+                id = "poi-1",
+                deviceLatitude = 31.0
+            )
+        )
+        fixture.clock.nowMillis += 1L
+        fixture.coordinator.submitCandidate(
+            candidate(
+                nowMillis = fixture.clock.nowMillis,
+                id = "poi-2",
+                deviceLatitude = 31.002
+            )
+        )
+
+        val firstBaidu = checkNotNull(
+            fixture.coordinator.claimNextCommand(
+                provider = MapProvider.BAIDU,
+                workerId = "baidu-worker"
+            )
+        )
+        fixture.coordinator.completeCommand(
+            firstBaidu.commandId,
+            result(firstBaidu, MapOperationStatus.SUCCESS)
+        )
+        val firstAmap = checkNotNull(
+            fixture.coordinator.claimNextCommand(
+                provider = MapProvider.AMAP,
+                workerId = "amap-worker"
+            )
+        )
+        fixture.coordinator.completeCommand(
+            firstAmap.commandId,
+            result(firstAmap, MapOperationStatus.FAILED)
+        )
+
+        val secondBaidu = checkNotNull(
+            fixture.coordinator.claimNextCommand(
+                provider = MapProvider.BAIDU,
+                workerId = "baidu-worker"
+            )
+        )
+        assertEquals(
+            "poi-2",
+            fixture.repository.currentSnapshot().transactions
+                .first { transaction ->
+                    transaction.transactionId ==
+                            secondBaidu.transactionId
+                }
+                .candidate
+                .unifiedPlaceId
+        )
+    }
+
+    // 验证同一设备真实位置只执行领导事务并复用高德成功结果。
+    @Test
+    fun reusesAmapResultForSameRealLocation() {
+        val fixture = coordinatorFixture()
+        fixture.coordinator.startSession()
+        fixture.coordinator.submitCandidate(
+            candidate(
+                nowMillis = fixture.clock.nowMillis,
+                id = "poi-1",
+                deviceLatitude = 31.0
+            )
+        )
+        fixture.clock.nowMillis += 1L
+        fixture.coordinator.submitCandidate(
+            candidate(
+                nowMillis = fixture.clock.nowMillis,
+                id = "poi-2",
+                deviceLatitude = 31.0001
+            )
+        )
+
+        val leaderCommand = checkNotNull(
+            fixture.coordinator.claimNextCommand(
+                provider = MapProvider.AMAP,
+                workerId = "amap-worker"
+            )
+        )
+        fixture.coordinator.completeCommand(
+            leaderCommand.commandId,
+            result(leaderCommand, MapOperationStatus.SUCCESS)
+        )
+
+        val transactions = fixture.repository.currentSnapshot()
+            .transactions
+            .sortedBy { transaction -> transaction.createdAtMillis }
+        assertTrue(transactions.first().state.amapTerminal)
+        assertTrue(transactions.last().state.amapTerminal)
+        assertEquals(
+            MapOperationStatus.ALREADY_COMPLETED,
+            transactions.last().state.amapResult?.status
+        )
+        assertEquals(
+            null,
+            fixture.coordinator.claimNextCommand(
+                provider = MapProvider.AMAP,
+                workerId = "amap-worker"
+            )
+        )
+    }
+
     // 创建可靠且无需等待停留的测试候选。
-    private fun candidate(nowMillis: Long): NearbyPlaceCandidate {
+    private fun candidate(
+        nowMillis: Long,
+        id: String = "poi-1",
+        deviceLatitude: Double = 31.0,
+        deviceLongitude: Double = 121.0
+    ): NearbyPlaceCandidate {
         return NearbyPlaceCandidate(
-            unifiedPlaceId = "poi-1",
-            providerPlaceIds = setOf("poi-1"),
+            unifiedPlaceId = id,
+            providerPlaceIds = setOf(id),
             name = "测试地点",
             address = "测试地址",
             category = "测试分类",
@@ -137,7 +261,35 @@ class CheckInCoordinatorTest {
             speedKmh = 0F,
             locationTimeMillis = nowMillis,
             firstSeenAtMillis = nowMillis,
-            observedAtMillis = nowMillis
+            observedAtMillis = nowMillis,
+            deviceLatitude = deviceLatitude,
+            deviceLongitude = deviceLongitude
+        )
+    }
+
+    // 创建包含可推进时钟和内存仓库的协调器测试夹具。
+    private fun coordinatorFixture(): CoordinatorFixture {
+        val repository = TestCheckInTransactionRepository()
+        val clock = MutableAppClock(nowMillis = 10_000L)
+        return CoordinatorFixture(
+            repository = repository,
+            clock = clock,
+            coordinator = CheckInCoordinator(
+                repository = repository,
+                candidateEvaluator = CandidateEvaluator(
+                    CandidateEvaluationPolicy(
+                        requiredStayMillis = 0L,
+                        fastRequiredStayMillis = 0L
+                    )
+                ),
+                stateMachine = DualMapStateMachine(
+                    DualMapStateMachinePolicy(
+                        maxAttemptsPerProvider = 3,
+                        retryDelayMillis = 5_000L
+                    )
+                ),
+                clock = clock
+            )
         )
     }
 
@@ -163,6 +315,15 @@ class CheckInCoordinatorTest {
         )
     }
 }
+
+/**
+ * 聚合协调器测试共享依赖。
+ */
+private data class CoordinatorFixture(
+    val repository: TestCheckInTransactionRepository,
+    val clock: MutableAppClock,
+    val coordinator: CheckInCoordinator
+)
 
 /**
  * 为测试提供可推进的显式时间。

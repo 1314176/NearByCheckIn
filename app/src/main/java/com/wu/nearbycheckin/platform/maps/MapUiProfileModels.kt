@@ -65,6 +65,11 @@ data class MapUiSnapshot(
         return labels.any(::hasClickableLabel)
     }
 
+    // 判断页面是否包含任一可执行标签。
+    fun hasAnyActionableLabel(labels: List<String>): Boolean {
+        return labels.any(::hasActionableLabel)
+    }
+
     // 判断页面文本、描述或资源 ID 是否包含指定片段。
     fun containsLabelFragment(fragment: String): Boolean {
         return nodes.any { node ->
@@ -123,7 +128,6 @@ data class MapUiDecision(
 
 interface ProviderUiProfile {
     val packageName: String
-    val supportedAppVersion: String
     val profileVersion: String
 
     // 根据纯 Kotlin 页面快照返回下一动作或终态。
