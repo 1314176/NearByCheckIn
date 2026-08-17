@@ -77,6 +77,7 @@ enum class PluginPage {
     CANDIDATE_LIST,
     SUCCESS,
     ALREADY_COMPLETED,
+    DAILY_QUOTA_EXHAUSTED,
     SHARE_PANEL,
     RECOVERY,
     BLOCKED,

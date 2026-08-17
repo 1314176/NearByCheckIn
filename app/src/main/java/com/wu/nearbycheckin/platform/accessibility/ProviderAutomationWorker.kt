@@ -86,6 +86,9 @@ class ProviderAutomationWorker(
             return
         }
         running = true
+        if (provider == MapProvider.BAIDU) {
+            coordinator.refreshBaiduDailyQuota()
+        }
         coordinator.resumePendingTasks(provider)
         mainHandler.postDelayed(
             tickRunnable,
@@ -102,6 +105,13 @@ class ProviderAutomationWorker(
 
     // 选择当前阶段可执行的 Provider 并推进一个原子步骤。
     private fun tick() {
+        if (
+            provider == MapProvider.BAIDU &&
+            coordinator.refreshBaiduDailyQuota()
+        ) {
+            reportStatus("百度地图今日额度已用尽，等待次日自动恢复")
+            return
+        }
         val snapshot = repository.currentSnapshot()
         if (snapshot.session?.status != AutomationSessionStatus.RUNNING) {
             return
@@ -130,11 +140,16 @@ class ProviderAutomationWorker(
             task.provider == provider &&
                     task.status in ACTIVE_STATUSES
         }
+        if (pageState.page == PluginPage.DAILY_QUOTA_EXHAUSTED) {
+            finishBaiduDailyQuota(activeTask, plugin, window)
+            return
+        }
         if (activeTask?.status == ProviderTaskStatus.VERIFYING) {
             verifyActiveTask(activeTask, plugin.verifyResult(window), rootNode)
             return
         }
         when (pageState.page) {
+            PluginPage.DAILY_QUOTA_EXHAUSTED -> Unit
             PluginPage.BLOCKED -> finishBlockedTask(activeTask, plugin, window)
             PluginPage.CANDIDATE_LIST -> processCandidateList(
                 provider = provider,
@@ -155,6 +170,25 @@ class ProviderAutomationWorker(
                 command = plugin.buildNextAction(pageState)
             )
         }
+    }
+
+    // 持久化百度每日额度证据并立即暂停当天百度队列。
+    private fun finishBaiduDailyQuota(
+        task: ProviderCheckInTask?,
+        plugin: com.wu.nearbycheckin.core.domain.plugin.MapAutomationPlugin,
+        window: com.wu.nearbycheckin.core.domain.plugin.MapWindowSnapshot
+    ) {
+        val observedEvidence = plugin.verifyResult(window)
+        val evidence = observedEvidence.copy(
+            taskId = task?.taskId.orEmpty(),
+            commandId = task?.commandId.orEmpty()
+                .ifBlank { observedEvidence.commandId }
+        )
+        if (task != null) {
+            coordinator.finishTask(task.taskId, evidence)
+        }
+        coordinator.markBaiduDailyQuotaReached(evidence)
+        reportStatus(evidence.message)
     }
 
     // 用 UI 列表原子刷新队列并选择首个未永久完成候选。

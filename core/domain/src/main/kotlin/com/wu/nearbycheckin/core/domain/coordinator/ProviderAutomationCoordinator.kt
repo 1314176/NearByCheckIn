@@ -7,6 +7,8 @@
 package com.wu.nearbycheckin.core.domain.coordinator
 
 
+import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 
 import com.wu.nearbycheckin.core.common.time.AppClock
@@ -32,7 +34,8 @@ class ProviderAutomationCoordinator(
     private val clock: AppClock,
     private val stateMachine: ProviderStateMachine = ProviderStateMachine(),
     private val taskIdFactory: () -> String = { UUID.randomUUID().toString() },
-    private val policy: ProviderAutomationPolicy = ProviderAutomationPolicy()
+    private val policy: ProviderAutomationPolicy = ProviderAutomationPolicy(),
+    private val zoneId: ZoneId = ZoneId.systemDefault()
 ) {
     private val lock = Any()
     private val locationFreshnessPolicy = ProviderLocationFreshnessPolicy()
@@ -284,7 +287,7 @@ class ProviderAutomationCoordinator(
             item.taskId == taskId
         } ?: return@synchronized false
         val nowMillis = clock.nowMillis()
-        when (evidence.resultStatus) {
+        val completed = when (evidence.resultStatus) {
             MapOperationStatus.SUCCESS -> repository.completeProviderTask(
                 taskId = taskId,
                 status = ProviderTaskStatus.COMPLETED,
@@ -313,9 +316,119 @@ class ProviderAutomationCoordinator(
             MapOperationStatus.TIMEOUT,
             MapOperationStatus.UNKNOWN ->
                 scheduleRetryOrFail(task, evidence, nowMillis)
-        }.also { completed ->
-            updateStateAfterTask(task.provider, evidence, completed)
         }
+        if (
+            completed &&
+            task.provider == MapProvider.BAIDU &&
+            evidence.resultStatus == MapOperationStatus.SUCCESS
+        ) {
+            recordBaiduVerifiedSuccess(task, evidence, nowMillis)
+        }
+        updateStateAfterTask(task.provider, evidence, completed)
+        completed
+    }
+
+    // 持久化百度每日额度状态并阻止当天继续领取任务。
+    fun markBaiduDailyQuotaReached(
+        evidence: MapOperationEvidence
+    ) = synchronized(lock) {
+        val nowMillis = clock.nowMillis()
+        val epochDay = localEpochDay(nowMillis)
+        val resetAtMillis = nextLocalDayStartMillis(nowMillis)
+        repository.updateSnapshot { snapshot ->
+            val runtime = snapshot.providerRuntime
+            val dailyCount = if (
+                runtime.baiduVerifiedSuccessEpochDay == epochDay
+            ) {
+                runtime.baiduDailyVerifiedSuccessCount
+            } else {
+                0
+            }
+            snapshot.copy(
+                providerRuntime = runtime.copy(
+                    baiduState = ProviderAutomationState.BLOCKED,
+                    activeProvider = null,
+                    baiduVerifiedSuccessEpochDay = epochDay,
+                    baiduDailyVerifiedSuccessCount = dailyCount,
+                    baiduObservedCheckInCount =
+                        evidence.afterCheckInCount
+                            ?: runtime.baiduObservedCheckInCount,
+                    baiduDailyQuotaReachedAtMillis =
+                        runtime.baiduDailyQuotaReachedAtMillis
+                            .takeIf { value -> value > 0L }
+                            ?: nowMillis,
+                    baiduDailyQuotaResetAtMillis = resetAtMillis,
+                    baiduDailyQuotaEvidence = evidence.message,
+                    lastPluginPage =
+                        "${MapProvider.BAIDU.name}:DAILY_QUOTA_EXHAUSTED",
+                    lastAction = "BLOCK_DAILY_QUOTA",
+                    lastEvidence = evidence.message,
+                    baiduPluginPage = "DAILY_QUOTA_EXHAUSTED",
+                    baiduPluginAction = "BLOCK_DAILY_QUOTA",
+                    baiduPluginEvidence = evidence.message
+                ),
+                automationStatus =
+                    "百度地图今日额度已用尽，已暂停百度任务，" +
+                            "次日自动恢复；今日确认成功${dailyCount}次"
+            )
+        }
+    }
+
+    // 到达本地次日零点后恢复百度队列并清除每日阻断状态。
+    fun refreshBaiduDailyQuota(): Boolean = synchronized(lock) {
+        val nowMillis = clock.nowMillis()
+        val snapshot = repository.currentSnapshot()
+        val resetAtMillis = snapshot.providerRuntime
+            .baiduDailyQuotaResetAtMillis
+        if (resetAtMillis <= 0L) {
+            return@synchronized false
+        }
+        if (nowMillis < resetAtMillis) {
+            return@synchronized true
+        }
+        repository.updateSnapshot { current ->
+            val tasks = current.providerTasks.map { task ->
+                if (
+                    task.provider == MapProvider.BAIDU &&
+                    task.status == ProviderTaskStatus.BLOCKED &&
+                    task.evidence?.page == "DAILY_QUOTA_EXHAUSTED" &&
+                    task.candidateKey !in current.providerCompletedKeys
+                ) {
+                    task.copy(
+                        status = ProviderTaskStatus.QUEUED,
+                        attempts = 0,
+                        commandId = "",
+                        availableAtMillis = nowMillis,
+                        leaseOwner = "",
+                        leaseUntilMillis = 0L,
+                        updatedAtMillis = nowMillis,
+                        lastError = "",
+                        evidence = null
+                    )
+                } else {
+                    task
+                }
+            }
+            current.copy(
+                providerTasks = tasks,
+                providerRuntime = current.providerRuntime.copy(
+                    baiduState = ProviderAutomationState.READY,
+                    activeProvider = null,
+                    baiduVerifiedSuccessEpochDay = localEpochDay(nowMillis),
+                    baiduDailyVerifiedSuccessCount = 0,
+                    baiduListStale = true,
+                    baiduDailyQuotaReachedAtMillis = 0L,
+                    baiduDailyQuotaResetAtMillis = 0L,
+                    baiduDailyQuotaEvidence = "",
+                    lastAction = "RESUME_AFTER_DAILY_QUOTA",
+                    lastEvidence = "百度地图每日额度已于次日恢复",
+                    baiduPluginAction = "RESUME_AFTER_DAILY_QUOTA",
+                    baiduPluginEvidence = "百度地图每日额度已于次日恢复"
+                ),
+                automationStatus = "百度地图每日额度已恢复，继续自动打卡"
+            )
+        }
+        false
     }
 
     // 把插件页面、动作和证据摘要写入唯一运行状态。
@@ -395,6 +508,13 @@ class ProviderAutomationCoordinator(
         synchronized(lock) {
             var resumed = false
             val nowMillis = clock.nowMillis()
+            if (
+                provider == MapProvider.BAIDU &&
+                repository.currentSnapshot().providerRuntime
+                    .baiduDailyQuotaResetAtMillis > nowMillis
+            ) {
+                return@synchronized false
+            }
             repository.updateSnapshot { snapshot ->
                 val tasks = snapshot.providerTasks.map { task ->
                     if (
@@ -427,6 +547,61 @@ class ProviderAutomationCoordinator(
             }
             resumed
         }
+
+    // 记录百度最终成功证据并维护当日与累计确认成功数量。
+    private fun recordBaiduVerifiedSuccess(
+        task: ProviderCheckInTask,
+        evidence: MapOperationEvidence,
+        nowMillis: Long
+    ) {
+        repository.updateSnapshot { snapshot ->
+            val runtime = snapshot.providerRuntime
+            val epochDay = localEpochDay(nowMillis)
+            val dailyCount = if (
+                runtime.baiduVerifiedSuccessEpochDay == epochDay
+            ) {
+                runtime.baiduDailyVerifiedSuccessCount + 1
+            } else {
+                1
+            }
+            val totalCount = runtime.baiduTotalVerifiedSuccessCount + 1
+            snapshot.copy(
+                providerRuntime = runtime.copy(
+                    baiduVerifiedSuccessEpochDay = epochDay,
+                    baiduDailyVerifiedSuccessCount = dailyCount,
+                    baiduTotalVerifiedSuccessCount = totalCount,
+                    baiduObservedCheckInCount =
+                        evidence.afterCheckInCount
+                            ?: runtime.baiduObservedCheckInCount,
+                    baiduLastVerifiedSuccessAtMillis = nowMillis,
+                    baiduLastVerifiedSuccessEvidence = evidence.message
+                ),
+                automationStatus =
+                    "百度打卡成功：${task.candidate.name}；" +
+                            "${evidence.message}；今日确认成功${dailyCount}次，" +
+                            "累计${totalCount}次"
+            )
+        }
+    }
+
+    // 将时间戳转换为设备本地自然日编号。
+    private fun localEpochDay(timestampMillis: Long): Long {
+        return Instant.ofEpochMilli(timestampMillis)
+            .atZone(zoneId)
+            .toLocalDate()
+            .toEpochDay()
+    }
+
+    // 计算设备本地时区下一个自然日零点。
+    private fun nextLocalDayStartMillis(timestampMillis: Long): Long {
+        return Instant.ofEpochMilli(timestampMillis)
+            .atZone(zoneId)
+            .toLocalDate()
+            .plusDays(1L)
+            .atStartOfDay(zoneId)
+            .toInstant()
+            .toEpochMilli()
+    }
 
     // 按尝试次数安排指数退避或终结任务。
     private fun scheduleRetryOrFail(

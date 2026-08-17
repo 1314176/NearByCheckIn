@@ -141,6 +141,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
                 PluginCommandType.DISMISS_RESULT to DISMISS_LABELS
             PluginPage.SHARE_PANEL -> return null
             PluginPage.RECOVERY -> return null
+            PluginPage.DAILY_QUOTA_EXHAUSTED,
             PluginPage.BLOCKED -> PluginCommandType.BLOCK to emptyList()
             PluginPage.UNKNOWN -> return null
         }
@@ -175,6 +176,8 @@ class AmapCheckInPlugin : MapAutomationPlugin {
             state.page == PluginPage.SUCCESS -> MapOperationStatus.SUCCESS
             state.page == PluginPage.ALREADY_COMPLETED ->
                 MapOperationStatus.ALREADY_COMPLETED
+            state.page == PluginPage.DAILY_QUOTA_EXHAUSTED ->
+                MapOperationStatus.BLOCKED
             state.page == PluginPage.BLOCKED && !rateLimited ->
                 MapOperationStatus.BLOCKED
             else -> MapOperationStatus.UNKNOWN

@@ -41,6 +41,8 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         val labels = window.nodes.flatMap(PluginNodeSnapshot::labels)
         val joined = labels.joinToString("|")
         val page = when {
+            isDailyQuotaEvidence(joined) ->
+                PluginPage.DAILY_QUOTA_EXHAUSTED
             labels.any { label -> BLOCKED_LABELS.any(label::contains) } ->
                 PluginPage.BLOCKED
             labels.any { label -> label.contains(SHARE_PANEL_LABEL) } ->
@@ -74,12 +76,14 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
             profileVersion = profileVersion,
             fingerprint = window.fingerprint(),
             evidence = joined.take(MAX_EVIDENCE_LENGTH),
-            blockedReason = if (page == PluginPage.BLOCKED) {
-                labels.firstOrNull { label ->
+            blockedReason = when (page) {
+                PluginPage.DAILY_QUOTA_EXHAUSTED ->
+                    DAILY_QUOTA_LABELS.firstOrNull(joined::contains)
+                        ?: DAILY_QUOTA_MESSAGE
+                PluginPage.BLOCKED -> labels.firstOrNull { label ->
                     BLOCKED_LABELS.any(label::contains)
                 }.orEmpty()
-            } else {
-                ""
+                else -> ""
             }
         )
     }
@@ -122,6 +126,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
                 PluginCommandType.DISMISS_RESULT to emptyList()
             PluginPage.RECOVERY ->
                 PluginCommandType.NAVIGATE_BACK to listOf("返回")
+            PluginPage.DAILY_QUOTA_EXHAUSTED,
             PluginPage.BLOCKED ->
                 PluginCommandType.BLOCK to emptyList()
             PluginPage.UNKNOWN -> return null
@@ -179,6 +184,8 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
             }
             state.page == PluginPage.ALREADY_COMPLETED ->
                 MapOperationStatus.ALREADY_COMPLETED
+            state.page == PluginPage.DAILY_QUOTA_EXHAUSTED ->
+                MapOperationStatus.BLOCKED
             state.page == PluginPage.BLOCKED -> MapOperationStatus.BLOCKED
             else -> MapOperationStatus.UNKNOWN
         }
@@ -206,10 +213,19 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
                         "百度地图已标记该地点完成"
                     }
                 MapOperationStatus.BLOCKED ->
-                    state.blockedReason.ifBlank { "百度地图流程被阻断" }
+                    if (state.page == PluginPage.DAILY_QUOTA_EXHAUSTED) {
+                        "百度地图今日打卡额度已用尽：" +
+                                state.blockedReason.ifBlank {
+                                    DAILY_QUOTA_MESSAGE
+                                }
+                    } else {
+                        state.blockedReason.ifBlank { "百度地图流程被阻断" }
+                    }
                 else -> "等待百度地图返回确定结果"
             },
-            observedAtMillis = window.capturedAtMillis
+            observedAtMillis = window.capturedAtMillis,
+            beforeCheckInCount = beforeCheckInCount,
+            afterCheckInCount = afterCheckInCount
         )
     }
 
@@ -297,6 +313,12 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         }
     }
 
+    // 只把明确包含百度打卡数量语义的次日提示识别为每日额度耗尽。
+    private fun isDailyQuotaEvidence(evidence: String): Boolean {
+        return DAILY_QUOTA_LABELS.any(evidence::contains) ||
+                evidence.contains("打卡") && evidence.contains("明天再试")
+    }
+
     // 从成功页或打卡首页的“已打卡 + 数量 + 个地点”语义序列读取统计数。
     private fun List<String>.extractCheckInCount(): Int? {
         firstNotNullOfOrNull { label ->
@@ -327,7 +349,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
     }
 
     private companion object {
-        const val PROFILE_VERSION = "baidu-continuous-v5.2.4"
+        const val PROFILE_VERSION = "baidu-continuous-v5.2.5"
         const val MAX_EVIDENCE_LENGTH = 1_000
         const val ROW_BUCKET_HEIGHT = 120
         const val MIN_NAME_LENGTH = 2
@@ -339,6 +361,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         const val SHARE_CLOSE_VIEW_ID =
             "com.baidu.BaiduMap:id/iv_close_share"
         const val BACK_VIEW_ID = "com.baidu.BaiduMap:id/btn_back"
+        const val DAILY_QUOTA_MESSAGE = "今天打卡太多地方啦，明天再试"
         val ALBUM_FOOTPRINT_LABELS = listOf(
             "相册足迹",
             "相册足迹读取中"
@@ -366,6 +389,12 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         )
         val CHECK_IN_COUNT_INLINE_PATTERN = Regex(
             "(?:年已打卡了|已打卡)\\s*(\\d+)\\s*个地点"
+        )
+        val DAILY_QUOTA_LABELS = listOf(
+            DAILY_QUOTA_MESSAGE,
+            "今天打卡太多地方啦",
+            "今日打卡太多地方",
+            "今天已打卡太多"
         )
         val BLOCKED_LABELS = listOf(
             "登录后",

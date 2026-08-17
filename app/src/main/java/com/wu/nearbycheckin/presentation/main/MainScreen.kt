@@ -52,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -135,6 +136,16 @@ fun MainScreen(
 
         // 4. 数据管理
         DataManagementCard(onEvent)
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "当前软件版本：v3.0.2     auther：Mr.Wu",
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+            color = RadarColors.TextGray,
+            textAlign = TextAlign.Center
+        )
 
         Spacer(modifier = Modifier.height(48.dp))
     }
@@ -221,6 +232,38 @@ private fun ActiveTaskCard(state: MainUiState, onEvent: (MainUiEvent) -> Unit) {
             )
         }
 
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "百度今日确认成功 ${state.baiduDailyVerifiedSuccessCount} | " +
+                    "累计确认 ${state.baiduTotalVerifiedSuccessCount}",
+            style = MaterialTheme.typography.labelSmall,
+            color = RadarColors.NeonBlue
+        )
+        if (state.baiduObservedCheckInCount > 0) {
+            Text(
+                text = "百度界面最近统计 ${state.baiduObservedCheckInCount} 个地点",
+                style = MaterialTheme.typography.labelSmall,
+                color = RadarColors.TextGray
+            )
+        }
+        if (state.baiduLastVerifiedSuccessEvidence.isNotBlank()) {
+            Text(
+                text = "最近成功证据: " +
+                        state.baiduLastVerifiedSuccessEvidence.take(160),
+                style = MaterialTheme.typography.labelSmall,
+                color = RadarColors.TextGray
+            )
+        }
+        if (state.baiduDailyQuotaBlocked) {
+            Text(
+                text = "百度今日额度已用尽，将于 " +
+                        formatLogTime(state.baiduDailyQuotaResetAtMillis) +
+                        " 自动恢复",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Yellow
+            )
+        }
+
         if (state.pluginPage.isNotBlank()) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
@@ -244,8 +287,11 @@ private fun ActiveTaskCard(state: MainUiState, onEvent: (MainUiEvent) -> Unit) {
         }
 
         if (
-            state.transactionStatus == "BLOCKED" ||
-            state.baiduProviderState == "BLOCKED"
+            (
+                    state.transactionStatus == "BLOCKED" ||
+                            state.baiduProviderState == "BLOCKED"
+                    ) &&
+            !state.baiduDailyQuotaBlocked
         ) {
             Spacer(modifier = Modifier.height(12.dp))
             Button(
@@ -726,45 +772,46 @@ private fun RuntimeLogsDialog(
  */
 @Composable
 private fun RuntimeLogsContent(logs: List<AutomationLogEntry>) {
-    Text(text = "界面显示最近300条；完整日志按25 MB分段，不自动覆盖或删除，仅手动清空时同步删除。")
-    Spacer(modifier = Modifier.height(8.dp))
-    if (logs.isEmpty()) {
-        Text(text = "暂无运行日志。")
-        return
-    }
+    Column {
+        Text(text = "界面显示最近300条；完整日志按25 MB分段，不自动覆盖或删除，仅手动清空时同步删除。")
+        Spacer(modifier = Modifier.height(16.dp))
+        if (logs.isEmpty()) {
+            Text(text = "暂无运行日志。")
+        } else {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                logs.forEachIndexed { index, entry ->
+                    val levelText = when (entry.level) {
+                        AutomationLogLevel.INFO -> "信息"
+                        AutomationLogLevel.WARNING -> "警告"
+                        AutomationLogLevel.ERROR -> "错误"
+                    }
+                    val levelColor = when (entry.level) {
+                        AutomationLogLevel.INFO -> RadarColors.NeonBlue
+                        AutomationLogLevel.WARNING -> Color.Yellow
+                        AutomationLogLevel.ERROR -> Color.Red
+                    }
 
-    Column(
-        modifier = Modifier
-            .heightIn(max = 420.dp)
-            .verticalScroll(rememberScrollState())
-    ) {
-        logs.forEachIndexed { index, entry ->
-            val levelText = when (entry.level) {
-                AutomationLogLevel.INFO -> "信息"
-                AutomationLogLevel.WARNING -> "警告"
-                AutomationLogLevel.ERROR -> "错误"
-            }
-            val levelColor = when (entry.level) {
-                AutomationLogLevel.INFO -> RadarColors.NeonBlue
-                AutomationLogLevel.WARNING -> Color.Yellow
-                AutomationLogLevel.ERROR -> Color.Red
-            }
-
-            Text(
-                text = "${formatLogTime(entry.timestampMillis)} [$levelText] ${entry.source}",
-                style = MaterialTheme.typography.labelSmall,
-                color = levelColor
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = entry.message,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White
-            )
-            if (index < logs.lastIndex) {
-                Spacer(modifier = Modifier.height(10.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "${formatLogTime(entry.timestampMillis)} [$levelText] ${entry.source}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = levelColor
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = entry.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White
+                    )
+                    if (index < logs.lastIndex) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        HorizontalDivider()
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+                }
             }
         }
     }

@@ -384,6 +384,18 @@ class MainViewModel(
             baiduCompletedCount = snapshot.providerCompletedKeys.count {
                 key -> key.provider == MapProvider.BAIDU
             },
+            baiduDailyVerifiedSuccessCount = snapshot.providerRuntime
+                .baiduDailyVerifiedSuccessCount,
+            baiduTotalVerifiedSuccessCount = snapshot.providerRuntime
+                .baiduTotalVerifiedSuccessCount,
+            baiduObservedCheckInCount = snapshot.providerRuntime
+                .baiduObservedCheckInCount,
+            baiduLastVerifiedSuccessEvidence = snapshot.providerRuntime
+                .baiduLastVerifiedSuccessEvidence,
+            baiduDailyQuotaBlocked = snapshot.providerRuntime
+                .baiduDailyQuotaResetAtMillis > System.currentTimeMillis(),
+            baiduDailyQuotaResetAtMillis = snapshot.providerRuntime
+                .baiduDailyQuotaResetAtMillis,
             baiduListFingerprint =
                 snapshot.providerRuntime.baiduListFingerprint,
             activeProviderCandidate = providerTask?.candidate?.name.orEmpty(),

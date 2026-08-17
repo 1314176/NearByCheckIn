@@ -193,7 +193,16 @@ data class DualMapRuntimeState(
     val baiduPluginEvidence: String = "",
     val amapPluginPage: String = "",
     val amapPluginAction: String = "",
-    val amapPluginEvidence: String = ""
+    val amapPluginEvidence: String = "",
+    val baiduVerifiedSuccessEpochDay: Long = 0L,
+    val baiduDailyVerifiedSuccessCount: Int = 0,
+    val baiduTotalVerifiedSuccessCount: Int = 0,
+    val baiduObservedCheckInCount: Int = 0,
+    val baiduLastVerifiedSuccessAtMillis: Long = 0L,
+    val baiduLastVerifiedSuccessEvidence: String = "",
+    val baiduDailyQuotaReachedAtMillis: Long = 0L,
+    val baiduDailyQuotaResetAtMillis: Long = 0L,
+    val baiduDailyQuotaEvidence: String = ""
 )
 
 /**
@@ -211,7 +220,9 @@ data class MapOperationEvidence(
     val afterFingerprint: String,
     val resultStatus: MapOperationStatus,
     val message: String,
-    val observedAtMillis: Long
+    val observedAtMillis: Long,
+    val beforeCheckInCount: Int? = null,
+    val afterCheckInCount: Int? = null
 )
 
 // 将候选文本归一化为跨进程重启稳定的键字段。

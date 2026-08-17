@@ -26,8 +26,9 @@ android {
         manifestPlaceholders["AMAP_MAP_AK"] = amapMapAk
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        // 版本从3.0.0起，每完成一轮代码编辑后递增，并同步主界面底部版本文字。
+        versionCode = 30002
+        versionName = "3.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

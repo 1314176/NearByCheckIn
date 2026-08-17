@@ -7,6 +7,9 @@
 package com.wu.nearbycheckin.core.domain.coordinator
 
 
+import java.time.Instant
+import java.time.ZoneId
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -89,6 +92,73 @@ class ProviderAutomationCoordinatorTest {
             snapshot.providerTasks.single().status
         )
         assertTrue(candidate.toPlaceKey() in snapshot.providerCompletedKeys)
+        assertEquals(
+            1,
+            snapshot.providerRuntime.baiduDailyVerifiedSuccessCount
+        )
+        assertEquals(
+            1,
+            snapshot.providerRuntime.baiduTotalVerifiedSuccessCount
+        )
+        assertEquals(
+            "完成",
+            snapshot.providerRuntime.baiduLastVerifiedSuccessEvidence
+        )
+    }
+
+    @Test
+    fun `百度每日额度阻断当天任务并在次日零点自动恢复`() {
+        val startMillis = Instant.parse("2026-08-17T10:00:00Z")
+            .toEpochMilli()
+        val fixture = fixture(startMillis)
+        fixture.coordinator.beginCandidateRefresh(MapProvider.BAIDU)
+        fixture.coordinator.replaceCandidates(
+            MapProvider.BAIDU,
+            listOf(candidate("额度边界地点", completed = false)),
+            "list-daily-quota"
+        )
+        val task = fixture.coordinator.claimNextTask(
+            MapProvider.BAIDU,
+            "worker"
+        )!!
+        fixture.coordinator.beginVerification(task.taskId, "command-quota")
+        val evidence = evidence(
+            taskId = task.taskId,
+            status = MapOperationStatus.BLOCKED
+        ).copy(
+            page = "DAILY_QUOTA_EXHAUSTED",
+            message = "百度地图今日打卡额度已用尽"
+        )
+
+        fixture.coordinator.finishTask(task.taskId, evidence)
+        fixture.coordinator.markBaiduDailyQuotaReached(evidence)
+
+        val blocked = fixture.repository.currentSnapshot()
+        assertEquals(
+            ProviderAutomationState.BLOCKED,
+            blocked.providerRuntime.baiduState
+        )
+        assertTrue(fixture.coordinator.refreshBaiduDailyQuota())
+        assertFalse(fixture.coordinator.manualResume(MapProvider.BAIDU))
+        assertEquals(
+            ProviderTaskStatus.BLOCKED,
+            blocked.providerTasks.single().status
+        )
+
+        fixture.clock.value = Instant.parse("2026-08-18T00:00:00Z")
+            .toEpochMilli()
+
+        assertFalse(fixture.coordinator.refreshBaiduDailyQuota())
+        val resumed = fixture.repository.currentSnapshot()
+        assertEquals(
+            ProviderAutomationState.READY,
+            resumed.providerRuntime.baiduState
+        )
+        assertEquals(0L, resumed.providerRuntime.baiduDailyQuotaResetAtMillis)
+        assertEquals(
+            ProviderTaskStatus.QUEUED,
+            resumed.providerTasks.single().status
+        )
     }
 
     @Test
@@ -219,8 +289,8 @@ class ProviderAutomationCoordinatorTest {
         assertEquals(null, task.evidence)
     }
 
-    private fun fixture(): Fixture {
-        val clock = MutableClock(10_000L)
+    private fun fixture(nowMillis: Long = 10_000L): Fixture {
+        val clock = MutableClock(nowMillis)
         val repository = TestCheckInTransactionRepository(
             AutomationSnapshot(
                 session = AutomationSession(
@@ -242,7 +312,8 @@ class ProviderAutomationCoordinatorTest {
             coordinator = ProviderAutomationCoordinator(
                 repository = repository,
                 clock = clock,
-                taskIdFactory = { "task-${++id}" }
+                taskIdFactory = { "task-${++id}" },
+                zoneId = ZoneId.of("UTC")
             )
         )
     }
@@ -290,7 +361,7 @@ class ProviderAutomationCoordinatorTest {
     )
 
     private class MutableClock(
-        private var value: Long
+        var value: Long
     ) : AppClock {
         // 返回测试固定时间。
         override fun nowMillis(): Long = value

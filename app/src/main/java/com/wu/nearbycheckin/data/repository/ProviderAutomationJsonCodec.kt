@@ -100,6 +100,42 @@ internal object ProviderAutomationJsonCodec {
             put(AMAP_PLUGIN_PAGE, runtime.amapPluginPage)
             put(AMAP_PLUGIN_ACTION, runtime.amapPluginAction)
             put(AMAP_PLUGIN_EVIDENCE, runtime.amapPluginEvidence)
+            put(
+                BAIDU_VERIFIED_SUCCESS_EPOCH_DAY,
+                runtime.baiduVerifiedSuccessEpochDay
+            )
+            put(
+                BAIDU_DAILY_VERIFIED_SUCCESS_COUNT,
+                runtime.baiduDailyVerifiedSuccessCount
+            )
+            put(
+                BAIDU_TOTAL_VERIFIED_SUCCESS_COUNT,
+                runtime.baiduTotalVerifiedSuccessCount
+            )
+            put(
+                BAIDU_OBSERVED_CHECK_IN_COUNT,
+                runtime.baiduObservedCheckInCount
+            )
+            put(
+                BAIDU_LAST_VERIFIED_SUCCESS_AT_MILLIS,
+                runtime.baiduLastVerifiedSuccessAtMillis
+            )
+            put(
+                BAIDU_LAST_VERIFIED_SUCCESS_EVIDENCE,
+                runtime.baiduLastVerifiedSuccessEvidence
+            )
+            put(
+                BAIDU_DAILY_QUOTA_REACHED_AT_MILLIS,
+                runtime.baiduDailyQuotaReachedAtMillis
+            )
+            put(
+                BAIDU_DAILY_QUOTA_RESET_AT_MILLIS,
+                runtime.baiduDailyQuotaResetAtMillis
+            )
+            put(
+                BAIDU_DAILY_QUOTA_EVIDENCE,
+                runtime.baiduDailyQuotaEvidence
+            )
         }
     }
 
@@ -136,7 +172,34 @@ internal object ProviderAutomationJsonCodec {
             baiduPluginEvidence = value.optString(BAIDU_PLUGIN_EVIDENCE),
             amapPluginPage = value.optString(AMAP_PLUGIN_PAGE),
             amapPluginAction = value.optString(AMAP_PLUGIN_ACTION),
-            amapPluginEvidence = value.optString(AMAP_PLUGIN_EVIDENCE)
+            amapPluginEvidence = value.optString(AMAP_PLUGIN_EVIDENCE),
+            baiduVerifiedSuccessEpochDay = value.optLong(
+                BAIDU_VERIFIED_SUCCESS_EPOCH_DAY
+            ),
+            baiduDailyVerifiedSuccessCount = value.optInt(
+                BAIDU_DAILY_VERIFIED_SUCCESS_COUNT
+            ),
+            baiduTotalVerifiedSuccessCount = value.optInt(
+                BAIDU_TOTAL_VERIFIED_SUCCESS_COUNT
+            ),
+            baiduObservedCheckInCount = value.optInt(
+                BAIDU_OBSERVED_CHECK_IN_COUNT
+            ),
+            baiduLastVerifiedSuccessAtMillis = value.optLong(
+                BAIDU_LAST_VERIFIED_SUCCESS_AT_MILLIS
+            ),
+            baiduLastVerifiedSuccessEvidence = value.optString(
+                BAIDU_LAST_VERIFIED_SUCCESS_EVIDENCE
+            ),
+            baiduDailyQuotaReachedAtMillis = value.optLong(
+                BAIDU_DAILY_QUOTA_REACHED_AT_MILLIS
+            ),
+            baiduDailyQuotaResetAtMillis = value.optLong(
+                BAIDU_DAILY_QUOTA_RESET_AT_MILLIS
+            ),
+            baiduDailyQuotaEvidence = value.optString(
+                BAIDU_DAILY_QUOTA_EVIDENCE
+            )
         )
     }
 
@@ -268,6 +331,8 @@ internal object ProviderAutomationJsonCodec {
             put(RESULT_STATUS, resultStatus.name)
             put(MESSAGE, message)
             put(OBSERVED_AT_MILLIS, observedAtMillis)
+            put(BEFORE_CHECK_IN_COUNT, beforeCheckInCount ?: JSONObject.NULL)
+            put(AFTER_CHECK_IN_COUNT, afterCheckInCount ?: JSONObject.NULL)
         }
     }
 
@@ -288,8 +353,18 @@ internal object ProviderAutomationJsonCodec {
             afterFingerprint = optString(AFTER_FINGERPRINT),
             resultStatus = result,
             message = optString(MESSAGE),
-            observedAtMillis = optLong(OBSERVED_AT_MILLIS)
+            observedAtMillis = optLong(OBSERVED_AT_MILLIS),
+            beforeCheckInCount = optionalInt(BEFORE_CHECK_IN_COUNT),
+            afterCheckInCount = optionalInt(AFTER_CHECK_IN_COUNT)
         )
+    }
+
+    // 返回存在且非空的可选整数值。
+    private fun JSONObject.optionalInt(key: String): Int? {
+        if (isNull(key) || !has(key)) {
+            return null
+        }
+        return optInt(key)
     }
 
     // 将位置快照编码为 JSON 对象。
@@ -413,4 +488,24 @@ internal object ProviderAutomationJsonCodec {
     private const val AMAP_PLUGIN_PAGE = "amapPluginPage"
     private const val AMAP_PLUGIN_ACTION = "amapPluginAction"
     private const val AMAP_PLUGIN_EVIDENCE = "amapPluginEvidence"
+    private const val BAIDU_VERIFIED_SUCCESS_EPOCH_DAY =
+        "baiduVerifiedSuccessEpochDay"
+    private const val BAIDU_DAILY_VERIFIED_SUCCESS_COUNT =
+        "baiduDailyVerifiedSuccessCount"
+    private const val BAIDU_TOTAL_VERIFIED_SUCCESS_COUNT =
+        "baiduTotalVerifiedSuccessCount"
+    private const val BAIDU_OBSERVED_CHECK_IN_COUNT =
+        "baiduObservedCheckInCount"
+    private const val BAIDU_LAST_VERIFIED_SUCCESS_AT_MILLIS =
+        "baiduLastVerifiedSuccessAtMillis"
+    private const val BAIDU_LAST_VERIFIED_SUCCESS_EVIDENCE =
+        "baiduLastVerifiedSuccessEvidence"
+    private const val BAIDU_DAILY_QUOTA_REACHED_AT_MILLIS =
+        "baiduDailyQuotaReachedAtMillis"
+    private const val BAIDU_DAILY_QUOTA_RESET_AT_MILLIS =
+        "baiduDailyQuotaResetAtMillis"
+    private const val BAIDU_DAILY_QUOTA_EVIDENCE =
+        "baiduDailyQuotaEvidence"
+    private const val BEFORE_CHECK_IN_COUNT = "beforeCheckInCount"
+    private const val AFTER_CHECK_IN_COUNT = "afterCheckInCount"
 }

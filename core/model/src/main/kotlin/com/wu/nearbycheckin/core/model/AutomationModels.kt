@@ -205,7 +205,7 @@ data class AutomationSnapshot(
     }
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 6
+        const val CURRENT_SCHEMA_VERSION = 7
 
         private val ACTIVE_TRANSACTION_STATUSES = setOf(
             DualMapTransactionStatus.RUNNING,

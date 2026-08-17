@@ -86,6 +86,8 @@ class BaiduCheckInPluginTest {
 
         assertEquals(MapOperationStatus.SUCCESS, evidence.resultStatus)
         assertEquals("人民公园", evidence.matchedText)
+        assertEquals(1704, evidence.beforeCheckInCount)
+        assertEquals(1705, evidence.afterCheckInCount)
     }
 
     // 验证成功文案出现但地点统计未增加时不会写成新增成功。
@@ -241,6 +243,36 @@ class BaiduCheckInPluginTest {
             "com.baidu.BaiduMap:id/btn_back",
             command?.target?.viewId
         )
+    }
+
+    // 验证百度每日额度弹窗进入独立阻断页并生成可恢复证据。
+    @Test
+    fun recognizesDailyQuotaExhaustedDialog() {
+        val window = window(
+            node("今天打卡太多地方啦"),
+            node("明天再试")
+        )
+
+        val state = plugin.inspect(window)
+        val command = plugin.buildNextAction(state)
+        val evidence = plugin.verifyResult(window)
+
+        assertEquals(PluginPage.DAILY_QUOTA_EXHAUSTED, state.page)
+        assertEquals(PluginCommandType.BLOCK, command?.type)
+        assertEquals(MapOperationStatus.BLOCKED, evidence.resultStatus)
+        assertEquals(
+            PluginPage.DAILY_QUOTA_EXHAUSTED.name,
+            evidence.page
+        )
+        assertTrue(evidence.message.contains("今日打卡额度已用尽"))
+    }
+
+    // 验证缺少打卡数量语义的普通次日提示不会误停百度队列。
+    @Test
+    fun ignoresUnrelatedTomorrowHint() {
+        val state = plugin.inspect(window(node("活动明天再试")))
+
+        assertEquals(PluginPage.UNKNOWN, state.page)
     }
 
     // 创建百度插件窗口快照。
