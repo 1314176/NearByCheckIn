@@ -20,6 +20,7 @@ object AmapTransientMessagePolicy {
     private const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
     private val RATE_LIMIT_MARKERS = listOf(
         "打卡太频繁",
-        "操作太频繁"
+        "操作太频繁",
+        "操作频繁"
     )
 }

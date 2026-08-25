@@ -20,11 +20,13 @@ import com.wu.nearbycheckin.core.domain.plugin.MapAutomationPluginRegistry
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommand
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandType
 import com.wu.nearbycheckin.core.domain.plugin.PluginPage
+import com.wu.nearbycheckin.core.domain.plugin.PluginPageState
 import com.wu.nearbycheckin.core.model.AutomationSessionStatus
 import com.wu.nearbycheckin.core.model.MapOperationEvidence
 import com.wu.nearbycheckin.core.model.MapOperationStatus
 import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.core.model.ProviderCheckInTask
+import com.wu.nearbycheckin.core.model.ProviderPlaceCandidate
 import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
 import com.wu.nearbycheckin.platform.maps.PluginWindowSnapshotCollector
@@ -52,6 +54,12 @@ class ProviderAutomationWorker(
     private val visitedListFingerprints = linkedSetOf<String>()
     private var amapSecondTapTaskId = ""
     private var amapSecondTapDueMillis = 0L
+    private var amapSecondTapSubmittedTaskId = ""
+    private var amapTransientRateLimitMessage = ""
+    private var amapTransientRateLimitAtMillis = 0L
+    private var pendingNavigationSourcePage: PluginPage? = null
+    private var pendingNavigationCommandType: PluginCommandType? = null
+    private var navigationDeadlineMillis = 0L
     private var lastReportedStatus = ""
     private var lastReportedAtMillis = 0L
 
@@ -100,7 +108,17 @@ class ProviderAutomationWorker(
     fun stop() {
         running = false
         commandExecuting = false
+        clearPendingNavigation()
         mainHandler.removeCallbacks(tickRunnable)
+    }
+
+    // 保存高德短暂频率提示，供二次点击后的结果验证消费。
+    fun recordAmapRateLimitEvidence(message: String) {
+        if (provider != MapProvider.AMAP || message.isBlank()) {
+            return
+        }
+        amapTransientRateLimitMessage = message.trim()
+        amapTransientRateLimitAtMillis = System.currentTimeMillis()
     }
 
     // 选择当前阶段可执行的 Provider 并推进一个原子步骤。
@@ -112,8 +130,8 @@ class ProviderAutomationWorker(
             reportStatus("百度地图今日额度已用尽，等待次日自动恢复")
             return
         }
-        val snapshot = repository.currentSnapshot()
-        if (snapshot.session?.status != AutomationSessionStatus.RUNNING) {
+        val initialSnapshot = repository.currentSnapshot()
+        if (initialSnapshot.session?.status != AutomationSessionStatus.RUNNING) {
             return
         }
         val plugin = registry.resolve(provider) ?: return
@@ -136,6 +154,21 @@ class ProviderAutomationWorker(
             action = "INSPECT",
             evidence = pageState.evidence
         )
+        if (waitForNavigationSettlement(pageState.page)) {
+            return
+        }
+        val visibleCandidates = if (
+            pageState.page == PluginPage.CANDIDATE_LIST ||
+            pageState.page == PluginPage.CHECK_IN_ENTRY
+        ) {
+            plugin.readCandidates(window)
+        } else {
+            emptyList()
+        }
+        if (pageState.page == PluginPage.CANDIDATE_LIST) {
+            discardAmapEntryPlaceholders(visibleCandidates)
+        }
+        val snapshot = repository.currentSnapshot()
         val activeTask = snapshot.providerTasks.firstOrNull { task ->
             task.provider == provider &&
                     task.status in ACTIVE_STATUSES
@@ -156,7 +189,7 @@ class ProviderAutomationWorker(
                 rootNode = rootNode,
                 plugin = plugin,
                 windowFingerprint = pageState.fingerprint,
-                candidates = plugin.readCandidates(window),
+                candidates = visibleCandidates,
                 resetScrollHistory = when (provider) {
                     MapProvider.BAIDU ->
                         snapshot.providerRuntime.baiduListStale
@@ -164,10 +197,31 @@ class ProviderAutomationWorker(
                         snapshot.providerRuntime.amapListStale
                 }
             )
+            PluginPage.CHECK_IN_ENTRY -> if (
+                provider == MapProvider.AMAP &&
+                visibleCandidates.isNotEmpty()
+            ) {
+                processCandidateList(
+                    provider = provider,
+                    rootNode = rootNode,
+                    plugin = plugin,
+                    windowFingerprint = pageState.fingerprint,
+                    candidates = visibleCandidates,
+                    resetScrollHistory = snapshot.providerRuntime.amapListStale
+                )
+            } else {
+                executeNavigation(
+                    rootNode = rootNode,
+                    packageName = packageName,
+                    command = plugin.buildNextAction(pageState),
+                    sourcePage = pageState.page
+                )
+            }
             else -> executeNavigation(
                 rootNode = rootNode,
                 packageName = packageName,
-                command = plugin.buildNextAction(pageState)
+                command = plugin.buildNextAction(pageState),
+                sourcePage = pageState.page
             )
         }
     }
@@ -191,6 +245,42 @@ class ProviderAutomationWorker(
         reportStatus(evidence.message)
     }
 
+    // 进入真实地址列表后取消旧入口页生成的临时候选，避免它们抢占地点任务。
+    private fun discardAmapEntryPlaceholders(
+        visibleCandidates: List<ProviderPlaceCandidate>
+    ) {
+        if (
+            provider != MapProvider.AMAP ||
+            !AmapCandidateTransitionPolicy.hasRealCandidate(visibleCandidates)
+        ) {
+            return
+        }
+        val obsoleteTasks = repository.currentSnapshot().providerTasks
+            .filter { task ->
+                task.provider == MapProvider.AMAP &&
+                        task.status !in TERMINAL_TASK_STATUSES &&
+                        AmapCandidateTransitionPolicy.isEntryPlaceholder(
+                            task.candidate
+                        )
+            }
+        if (obsoleteTasks.isEmpty()) {
+            return
+        }
+        val nowMillis = System.currentTimeMillis()
+        obsoleteTasks.forEach { task ->
+            repository.completeProviderTask(
+                taskId = task.taskId,
+                status = ProviderTaskStatus.CANCELLED,
+                evidence = null,
+                errorMessage = "已进入高德真实候选列表",
+                nowMillis = nowMillis
+            )
+        }
+        verificationDeadlineMillis = 0L
+        clearAmapFollowUpState()
+        reportStatus("高德地图已识别真实地点列表，开始逐项打卡")
+    }
+
     // 用 UI 列表原子刷新队列并选择首个未永久完成候选。
     private fun processCandidateList(
         provider: MapProvider,
@@ -206,16 +296,29 @@ class ProviderAutomationWorker(
         val nowMillis = System.currentTimeMillis()
         val latestLocation = repository.currentSnapshot()
             .providerRuntime.latestLocation
+        val needsFreshLocation = provider == MapProvider.BAIDU ||
+                candidates.any { candidate ->
+                    candidate.stableHint.startsWith(
+                        DEVICE_LOCATION_HINT_PREFIX
+                    )
+                }
         if (
-            provider == MapProvider.BAIDU &&
+            needsFreshLocation &&
             !locationFreshnessPolicy.isFresh(latestLocation, nowMillis)
         ) {
-            reportStatus("百度地图等待误差小于500米且30秒内的新定位")
+            reportStatus(
+                "${provider.displayName()}等待误差小于500米且30秒内的新定位"
+            )
             return
         }
         coordinator.beginCandidateRefresh(provider)
         val locationBoundCandidates = candidates.map { candidate ->
-            if (latestLocation == null) {
+            if (
+                latestLocation == null ||
+                !candidate.stableHint.startsWith(
+                    DEVICE_LOCATION_HINT_PREFIX
+                )
+            ) {
                 candidate
             } else {
                 candidate.copy(
@@ -236,7 +339,7 @@ class ProviderAutomationWorker(
         ) {
             return
         }
-        if (!gestureDispatcher.canExecuteCommand()) {
+        if (!gestureDispatcher.canExecuteCommand(provider)) {
             return
         }
         val task = coordinator.claimNextTask(provider, WORKER_ID)
@@ -244,7 +347,8 @@ class ProviderAutomationWorker(
             scrollCandidatesIfNeeded(
                 rootNode = rootNode,
                 provider = provider,
-                fingerprint = windowFingerprint
+                fingerprint = windowFingerprint,
+                hasVisibleCandidates = candidates.isNotEmpty()
             )
             return
         }
@@ -268,10 +372,12 @@ class ProviderAutomationWorker(
             coordinator.beginVerification(task.taskId, command.commandId)
             verificationDeadlineMillis =
                 System.currentTimeMillis() + command.timeoutMillis
-            if (provider == MapProvider.AMAP) {
-                amapSecondTapTaskId = task.taskId
-                amapSecondTapDueMillis =
-                    System.currentTimeMillis() + AMAP_SECOND_TAP_DELAY_MILLIS
+            if (command.repeatAfterMillis > 0L) {
+                prepareAmapRepeatVerification(
+                    taskId = task.taskId,
+                    command = command,
+                    result = result
+                )
             }
             reportStatus("${provider.displayName()}正在验证：${task.candidate.name}")
         } else {
@@ -288,19 +394,44 @@ class ProviderAutomationWorker(
         evidence: MapOperationEvidence,
         rootNode: AccessibilityNodeInfo
     ) {
-        val normalizedEvidence = evidence.copy(
+        val transientRateLimitMessage = amapTransientRateLimitMessage
+            .takeIf {
+                System.currentTimeMillis() -
+                        amapTransientRateLimitAtMillis <=
+                        AMAP_TRANSIENT_EVIDENCE_MAX_AGE_MILLIS
+            }.orEmpty()
+        val resolvedEvidence = if (task.provider == MapProvider.AMAP) {
+            AmapCheckInFollowUpPolicy.resolveProviderEvidence(
+                evidence = evidence,
+                secondClickSubmitted =
+                    amapSecondTapSubmittedTaskId == task.taskId,
+                transientMessage = transientRateLimitMessage
+            )
+        } else {
+            evidence
+        }
+        val normalizedEvidence = resolvedEvidence.copy(
             taskId = task.taskId,
-            commandId = task.commandId.ifBlank { evidence.commandId }
+            commandId = task.commandId.ifBlank {
+                resolvedEvidence.commandId
+            }
         )
-        if (evidence.resultStatus == MapOperationStatus.UNKNOWN) {
+        if (resolvedEvidence.resultStatus == MapOperationStatus.UNKNOWN) {
+            if (
+                task.provider == MapProvider.AMAP &&
+                resolvedEvidence.page == PluginPage.CHECK_IN_ENTRY.name &&
+                amapSecondTapTaskId != task.taskId &&
+                amapSecondTapSubmittedTaskId != task.taskId &&
+                submitAmapCheckInFromEntry(task, rootNode)
+            ) {
+                return
+            }
             if (
                 task.provider == MapProvider.AMAP &&
                 amapSecondTapTaskId == task.taskId &&
                 System.currentTimeMillis() >= amapSecondTapDueMillis
             ) {
-                val command = registry.resolve(MapProvider.AMAP)
-                    ?.buildSelectAction(task.candidate)
-                    ?.copy(taskId = task.taskId)
+                val command = buildAmapRepeatCommand(task)
                 if (command != null) {
                     val result = executeCommand(
                         rootNode,
@@ -310,9 +441,22 @@ class ProviderAutomationWorker(
                     if (result.success) {
                         amapSecondTapTaskId = ""
                         amapSecondTapDueMillis = 0L
+                        amapSecondTapSubmittedTaskId = task.taskId
+                        verificationDeadlineMillis =
+                            System.currentTimeMillis() +
+                                    command.timeoutMillis.coerceAtLeast(
+                                        VERIFY_RECOVERY_MILLIS
+                                    )
+                        reportStatus(
+                            "高德地图已执行第二次打卡，等待地点统计增长或明确成功页"
+                        )
+                        return
                     }
+                    reportStatus("高德地图第二次打卡未执行：${result.message}")
                 }
-                return
+                if (System.currentTimeMillis() < verificationDeadlineMillis) {
+                    return
+                }
             }
             if (verificationDeadlineMillis == 0L) {
                 verificationDeadlineMillis =
@@ -321,20 +465,28 @@ class ProviderAutomationWorker(
             if (System.currentTimeMillis() < verificationDeadlineMillis) {
                 return
             }
+            val timeoutMessage = if (
+                normalizedEvidence.message.contains("频率提示")
+            ) {
+                "${normalizedEvidence.message}；最终证据验证超时，准备重试"
+            } else {
+                "${task.provider.displayName()}结果验证超时，准备重试"
+            }
             coordinator.finishTask(
                 task.taskId,
                 normalizedEvidence.copy(
                     resultStatus = MapOperationStatus.TIMEOUT,
-                    message = "百度地图结果验证超时"
+                    message = timeoutMessage
                 )
             )
+            reportStatus(timeoutMessage)
             verificationDeadlineMillis = 0L
+            clearAmapFollowUpState()
             return
         }
         coordinator.finishTask(task.taskId, normalizedEvidence)
         verificationDeadlineMillis = 0L
-        amapSecondTapTaskId = ""
-        amapSecondTapDueMillis = 0L
+        clearAmapFollowUpState()
         reportStatus(
             "${task.provider.displayName()}${task.candidate.name}：" +
                     normalizedEvidence.message
@@ -352,11 +504,108 @@ class ProviderAutomationWorker(
                 )
             )
         executeNavigation(
-            rootNode,
-            task.provider.packageName(),
-            dismissCommand
+            rootNode = rootNode,
+            packageName = task.provider.packageName(),
+            command = dismissCommand,
+            sourcePage = if (
+                normalizedEvidence.resultStatus ==
+                MapOperationStatus.SUCCESS
+            ) PluginPage.SUCCESS else PluginPage.ALREADY_COMPLETED
         )
         coordinator.markListStale(task.provider)
+    }
+
+    // 在真实地点选中后提交“开始打卡”，并安排两秒后的确认点击。
+    private fun submitAmapCheckInFromEntry(
+        task: ProviderCheckInTask,
+        rootNode: AccessibilityNodeInfo
+    ): Boolean {
+        val plugin = registry.resolve(MapProvider.AMAP) ?: return false
+        val command = plugin.buildNextAction(
+            PluginPageState(
+                page = PluginPage.CHECK_IN_ENTRY,
+                profileVersion = plugin.profileVersion,
+                fingerprint = task.candidate.fingerprint,
+                evidence = task.candidate.name
+            )
+        )?.copy(taskId = task.taskId) ?: return false
+        val result = executeCommand(
+            rootNode,
+            MapProvider.AMAP.packageName(),
+            command
+        )
+        if (!result.success) {
+            reportStatus(result.message)
+            return false
+        }
+        prepareAmapRepeatVerification(
+            taskId = task.taskId,
+            command = command,
+            result = result
+        )
+        return true
+    }
+
+    // 首次真实手势完成后等待页面稳定，再安排重新定位的第二次点击。
+    private fun prepareAmapRepeatVerification(
+        taskId: String,
+        command: PluginCommand,
+        result: PluginCommandExecutionResult
+    ) {
+        amapTransientRateLimitMessage = ""
+        amapTransientRateLimitAtMillis = 0L
+        amapSecondTapSubmittedTaskId = ""
+        if (result.deferredRepeatSubmitted) {
+            amapSecondTapTaskId = taskId
+            amapSecondTapDueMillis = Long.MAX_VALUE
+            verificationDeadlineMillis = System.currentTimeMillis() +
+                    AMAP_FIRST_TAP_COMPLETION_TIMEOUT_MILLIS
+            reportStatus("高德地图首次打卡已进入队列，等待系统完成回调")
+            return
+        }
+        amapSecondTapTaskId = taskId
+        amapSecondTapDueMillis = System.currentTimeMillis() +
+                command.repeatAfterMillis.coerceAtLeast(
+                    AMAP_SECOND_TAP_FALLBACK_MILLIS
+                )
+        verificationDeadlineMillis =
+            System.currentTimeMillis() + command.timeoutMillis
+        reportStatus("高德地图已提交开始打卡，2秒后执行确认点击")
+    }
+
+    // 根据入口占位任务或真实地点任务重新生成相同的高德确认点击命令。
+    private fun buildAmapRepeatCommand(
+        task: ProviderCheckInTask
+    ): PluginCommand? {
+        val plugin = registry.resolve(MapProvider.AMAP) ?: return null
+        val command = if (
+            AmapCandidateTransitionPolicy.isEntryPlaceholder(task.candidate)
+        ) {
+            plugin.buildSelectAction(task.candidate)
+        } else {
+            plugin.buildNextAction(
+                PluginPageState(
+                    page = PluginPage.CHECK_IN_ENTRY,
+                    profileVersion = plugin.profileVersion,
+                    fingerprint = task.candidate.fingerprint,
+                    evidence = task.candidate.name
+                )
+            )
+        }
+        return command?.copy(
+            taskId = task.taskId,
+            repeatAfterMillis = 0L,
+            target = command.target.copy(nodeFingerprint = "")
+        )
+    }
+
+    // 清除高德当前任务的二次点击和瞬时提示状态。
+    private fun clearAmapFollowUpState() {
+        amapSecondTapTaskId = ""
+        amapSecondTapDueMillis = 0L
+        amapSecondTapSubmittedTaskId = ""
+        amapTransientRateLimitMessage = ""
+        amapTransientRateLimitAtMillis = 0L
     }
 
     // 把阻断页转换为当前任务的持久化证据。
@@ -379,17 +628,23 @@ class ProviderAutomationWorker(
     private fun scrollCandidatesIfNeeded(
         rootNode: AccessibilityNodeInfo,
         provider: MapProvider,
-        fingerprint: String
+        fingerprint: String,
+        hasVisibleCandidates: Boolean
     ) {
         if (
             fingerprint in visitedListFingerprints ||
             visitedListFingerprints.size >= MAX_CANDIDATE_SCROLLS
         ) {
-            reportStatus("${provider.displayName()}当前列表已处理完成")
+            reportStatus(
+                if (hasVisibleCandidates) {
+                    "${provider.displayName()}当前列表已处理完成"
+                } else {
+                    "${provider.displayName()}候选列表可见但暂未解析到地点，等待重试"
+                }
+            )
             return
         }
-        visitedListFingerprints += fingerprint
-        executeCommand(
+        val result = executeCommand(
             rootNode,
             provider.packageName(),
             PluginCommand(
@@ -400,19 +655,68 @@ class ProviderAutomationWorker(
                 createdAtMillis = System.currentTimeMillis()
             )
         )
+        if (result.success) {
+            visitedListFingerprints += fingerprint
+        } else {
+            reportStatus(
+                if (hasVisibleCandidates) {
+                    "${provider.displayName()}当前列表已处理完成"
+                } else {
+                    "${provider.displayName()}候选列表解析失败：${result.message}"
+                }
+            )
+        }
     }
 
     // 执行页面导航命令并记录诊断。
     private fun executeNavigation(
         rootNode: AccessibilityNodeInfo,
         packageName: String,
-        command: PluginCommand?
+        command: PluginCommand?,
+        sourcePage: PluginPage
     ) {
         if (command == null || command.type == PluginCommandType.BLOCK) {
             return
         }
         val result = executeCommand(rootNode, packageName, command)
-        reportStatus(result.message)
+        if (result.success && command.type in NAVIGATION_COMMAND_TYPES) {
+            pendingNavigationSourcePage = sourcePage
+            pendingNavigationCommandType = command.type
+            navigationDeadlineMillis =
+                System.currentTimeMillis() + NAVIGATION_SETTLE_MILLIS
+            reportStatus(
+                "${provider.displayName()}已提交${command.type.name}，等待页面变化"
+            )
+        } else {
+            reportStatus(result.message)
+        }
+    }
+
+    // 页面未变化时等待界面稳定，超时后清除假成功并允许重新执行导航。
+    private fun waitForNavigationSettlement(
+        currentPage: PluginPage
+    ): Boolean {
+        val sourcePage = pendingNavigationSourcePage ?: return false
+        if (currentPage != sourcePage) {
+            clearPendingNavigation()
+            return false
+        }
+        if (System.currentTimeMillis() < navigationDeadlineMillis) {
+            return true
+        }
+        reportStatus(
+            "${provider.displayName()}${pendingNavigationCommandType?.name.orEmpty()}" +
+                    "后页面未变化，准备重试"
+        )
+        clearPendingNavigation()
+        return false
+    }
+
+    // 清除已经完成或超时的页面导航等待状态。
+    private fun clearPendingNavigation() {
+        pendingNavigationSourcePage = null
+        pendingNavigationCommandType = null
+        navigationDeadlineMillis = 0L
     }
 
     // 在 Worker 串行锁内执行一条命令。
@@ -437,10 +741,62 @@ class ProviderAutomationWorker(
                 action = command.type.name,
                 evidence = command.evidenceHint
             )
-            commandExecutor.execute(rootNode, packageName, command)
+            commandExecutor.execute(
+                rootNode = rootNode,
+                packageName = packageName,
+                command = command,
+                onDeferredRepeatFirstTapCompleted = { completed ->
+                    onAmapFirstTapCompleted(
+                        taskId = command.taskId,
+                        timeoutMillis = command.timeoutMillis,
+                        repeatAfterMillis = command.repeatAfterMillis,
+                        completed = completed
+                    )
+                }
+            )
         } finally {
             commandExecuting = false
         }
+    }
+
+    // 首次手势完成后开始两秒计时，届时重新读取高德页面并定位当前打卡按钮。
+    private fun onAmapFirstTapCompleted(
+        taskId: String,
+        timeoutMillis: Long,
+        repeatAfterMillis: Long,
+        completed: Boolean
+    ) {
+        if (
+            provider != MapProvider.AMAP ||
+            taskId.isBlank() ||
+            repository.currentSnapshot().providerTasks.none { task ->
+                task.taskId == taskId &&
+                        task.status == ProviderTaskStatus.VERIFYING
+            }
+        ) {
+            return
+        }
+        val nowMillis = System.currentTimeMillis()
+        amapSecondTapTaskId = if (completed) taskId else ""
+        amapSecondTapDueMillis = if (completed) {
+            nowMillis + repeatAfterMillis.coerceAtLeast(
+                AMAP_SECOND_TAP_FALLBACK_MILLIS
+            )
+        } else {
+            0L
+        }
+        amapSecondTapSubmittedTaskId = if (completed) "" else taskId
+        verificationDeadlineMillis = nowMillis +
+                repeatAfterMillis.coerceAtLeast(
+                    AMAP_SECOND_TAP_FALLBACK_MILLIS
+                ) + timeoutMillis.coerceAtLeast(VERIFY_RECOVERY_MILLIS)
+        reportStatus(
+            if (completed) {
+                "高德地图首次打卡已完成，2秒后重新读取页面并点击打卡"
+            } else {
+                "高德地图首次打卡被系统取消，等待超时后重试"
+            }
+        )
     }
 
     // 生成命令提交失败证据。
@@ -528,12 +884,46 @@ class ProviderAutomationWorker(
         const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
         const val POLL_INTERVAL_MILLIS = 1_000L
         const val VERIFY_RECOVERY_MILLIS = 10_000L
-        const val AMAP_SECOND_TAP_DELAY_MILLIS = 2_000L
+        const val AMAP_SECOND_TAP_FALLBACK_MILLIS = 2_000L
+        const val AMAP_FIRST_TAP_COMPLETION_TIMEOUT_MILLIS = 30_000L
+        const val AMAP_TRANSIENT_EVIDENCE_MAX_AGE_MILLIS = 10_000L
+        const val NAVIGATION_SETTLE_MILLIS = 1_500L
         const val STATUS_REPEAT_INTERVAL_MILLIS = 30_000L
         const val MAX_CANDIDATE_SCROLLS = 5
+        const val DEVICE_LOCATION_HINT_PREFIX = "device-real-location"
+        val NAVIGATION_COMMAND_TYPES = setOf(
+            PluginCommandType.NAVIGATE_MINE,
+            PluginCommandType.NAVIGATE_FOOTPRINT,
+            PluginCommandType.OPEN_CHECK_IN_ENTRY,
+            PluginCommandType.DISMISS_RESULT
+        )
         val ACTIVE_STATUSES = setOf(
             ProviderTaskStatus.ACTIVE,
             ProviderTaskStatus.VERIFYING
         )
+        val TERMINAL_TASK_STATUSES = setOf(
+            ProviderTaskStatus.BLOCKED,
+            ProviderTaskStatus.COMPLETED,
+            ProviderTaskStatus.SKIPPED,
+            ProviderTaskStatus.FAILED,
+            ProviderTaskStatus.CANCELLED
+        )
     }
+}
+
+internal object AmapCandidateTransitionPolicy {
+
+    // 判断真实地址列表是否至少包含一个可执行地点。
+    fun hasRealCandidate(candidates: List<ProviderPlaceCandidate>): Boolean {
+        return candidates.any { candidate -> !isEntryPlaceholder(candidate) }
+    }
+
+    // 识别入口页的设备位置槽位和历史误识别“当前位置”任务。
+    fun isEntryPlaceholder(candidate: ProviderPlaceCandidate): Boolean {
+        return candidate.stableHint.startsWith(DEVICE_LOCATION_HINT) ||
+                candidate.name.trim().trimEnd(':', '：') == CURRENT_LOCATION
+    }
+
+    private const val DEVICE_LOCATION_HINT = "device-real-location"
+    private const val CURRENT_LOCATION = "当前位置"
 }

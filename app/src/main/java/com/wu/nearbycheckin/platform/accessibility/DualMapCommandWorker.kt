@@ -239,30 +239,6 @@ class DualMapCommandWorker(
         )
 
         if (
-            command.provider == MapProvider.AMAP &&
-            AmapCheckInFollowUpPolicy.isSuccessfulRateLimit(
-                page = decision.page,
-                stage = amapCheckInStage
-            )
-        ) {
-            finishProfileOutcome(
-                command = command,
-                startedAtMillis = startedAtMillis,
-                outcome = MapUiExecutionOutcome.SUCCESS,
-                decision = decision.copy(
-                    evidence =
-                        "打卡提交后触发频率限制，高德打卡已生效"
-                ),
-                profileEvidence = appendBoundedWorkerEvidence(
-                    structuredEvidence = profileEvidence,
-                    key = "followUp",
-                    value = "submitted_click_rate_limited_success"
-                )
-            )
-            return
-        }
-
-        if (
             MapUiSuccessCleanupPolicy.shouldExecute(
                 provider = command.provider,
                 page = decision.page,

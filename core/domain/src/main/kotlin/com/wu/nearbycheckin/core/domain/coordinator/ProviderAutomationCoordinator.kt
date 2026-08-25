@@ -40,23 +40,33 @@ class ProviderAutomationCoordinator(
     private val lock = Any()
     private val locationFreshnessPolicy = ProviderLocationFreshnessPolicy()
 
-    // 保存最新位置并在不中断原子任务的前提下标记百度列表过期。
+    // 保存最新位置并在不中断原子任务的前提下标记双 Provider 列表过期。
     fun updateLocation(location: LocationSnapshot) = synchronized(lock) {
         val nowMillis = clock.nowMillis()
         if (!locationFreshnessPolicy.isFresh(location, nowMillis)) {
             return@synchronized
         }
         repository.updateSnapshot { snapshot ->
-            val currentState = snapshot.providerRuntime.baiduState
+            val baiduState = snapshot.providerRuntime.baiduState
+            val amapState = snapshot.providerRuntime.amapState
             snapshot.copy(
                 providerRuntime = snapshot.providerRuntime.copy(
                     latestLocation = location,
                     baiduListStale = true,
+                    amapListStale = true,
                     baiduState = if (
-                        currentState in BUSY_PROVIDER_STATES ||
-                        currentState == ProviderAutomationState.BLOCKED
+                        baiduState in BUSY_PROVIDER_STATES ||
+                        baiduState == ProviderAutomationState.BLOCKED
                     ) {
-                        currentState
+                        baiduState
+                    } else {
+                        ProviderAutomationState.READY
+                    },
+                    amapState = if (
+                        amapState in BUSY_PROVIDER_STATES ||
+                        amapState == ProviderAutomationState.BLOCKED
+                    ) {
+                        amapState
                     } else {
                         ProviderAutomationState.READY
                     }
@@ -122,13 +132,44 @@ class ProviderAutomationCoordinator(
                 .mapTo(mutableSetOf()) { candidate ->
                     candidate.toPlaceKey()
                 }
-            val completedKeys = snapshot.providerCompletedKeys +
+            val reopenedAmapTaskIds = if (provider == MapProvider.AMAP) {
+                snapshot.providerTasks
+                    .filter { task ->
+                        task.candidateKey in visibleKeys &&
+                        task.shouldReopenUnverifiedAmapCompletion(
+                            profileVersion
+                        )
+                    }
+                    .mapTo(mutableSetOf()) { task -> task.taskId }
+            } else {
+                emptySet()
+            }
+            val reopenedAmapKeys = snapshot.providerTasks
+                .filter { task -> task.taskId in reopenedAmapTaskIds }
+                .mapTo(mutableSetOf()) { task -> task.candidateKey }
+            val completedKeys =
+                (snapshot.providerCompletedKeys - reopenedAmapKeys) +
                     uiCompletedKeys
             val latestCandidatesByKey = validCandidates.associateBy {
                 candidate -> candidate.toPlaceKey()
             }
             val existingTasks = snapshot.providerTasks.map { task ->
-                if (
+                if (task.taskId in reopenedAmapTaskIds) {
+                    latestCandidatesByKey[task.candidateKey]?.let {
+                        candidate -> task.copy(
+                            candidate = candidate,
+                            status = ProviderTaskStatus.QUEUED,
+                            attempts = 0,
+                            commandId = "",
+                            updatedAtMillis = nowMillis,
+                            availableAtMillis = nowMillis,
+                            leaseOwner = "",
+                            leaseUntilMillis = 0L,
+                            lastError = "",
+                            evidence = null
+                        )
+                    } ?: task
+                } else if (
                     task.provider == provider &&
                     task.candidateKey in completedKeys &&
                     task.status !in TERMINAL_TASK_STATUSES
@@ -218,7 +259,11 @@ class ProviderAutomationCoordinator(
                         candidate.provider == provider
                     } + validCandidates,
                 providerTasks = tasks,
-                providerCompletedKeys = completedKeys
+                providerCompletedKeys = completedKeys,
+                records = snapshot.records.filterNot { record ->
+                    record.id.removePrefix("provider-") in
+                            reopenedAmapTaskIds
+                }
             ).withCandidateListResult(
                 provider = provider,
                 listFingerprint = listFingerprint,
@@ -748,6 +793,31 @@ class ProviderAutomationCoordinator(
         } else {
             this
         }
+    }
+
+    // 插件升级时仅重开缺少数量增长或明确成功页的旧高德完成任务。
+    private fun ProviderCheckInTask.shouldReopenUnverifiedAmapCompletion(
+        currentProfileVersion: String
+    ): Boolean {
+        if (
+            provider != MapProvider.AMAP ||
+            status != ProviderTaskStatus.COMPLETED ||
+            currentProfileVersion.isBlank()
+        ) {
+            return false
+        }
+        val finalEvidence = evidence ?: return true
+        if (finalEvidence.profileVersion == currentProfileVersion) {
+            return false
+        }
+        val beforeCheckInCount = finalEvidence.beforeCheckInCount
+        val afterCheckInCount = finalEvidence.afterCheckInCount
+        val countIncreased = beforeCheckInCount != null &&
+                afterCheckInCount != null &&
+                afterCheckInCount > beforeCheckInCount
+        val explicitSuccessPage =
+            finalEvidence.page == "SUCCESS"
+        return !countIncreased && !explicitSuccessPage
     }
 
     private companion object {

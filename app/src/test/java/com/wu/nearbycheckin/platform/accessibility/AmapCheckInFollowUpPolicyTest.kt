@@ -6,6 +6,10 @@
 
 package com.wu.nearbycheckin.platform.accessibility
 
+import com.wu.nearbycheckin.core.model.MapOperationEvidence
+import com.wu.nearbycheckin.core.model.MapOperationStatus
+import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.ProviderPlaceCandidate
 import com.wu.nearbycheckin.platform.maps.MapUiAction
 import com.wu.nearbycheckin.platform.maps.MapUiPage
 
@@ -22,23 +26,6 @@ class AmapCheckInFollowUpPolicyTest {
         assertEquals(
             AmapCheckInStage.SECOND_CLICK_SUBMITTED,
             AmapCheckInFollowUpPolicy.stageAfterAtomicDoubleClick()
-        )
-    }
-
-    // 验证首次提交后的异步频率限制即可作为成功证据。
-    @Test
-    fun acceptsRateLimitAfterAnyCheckInSubmission() {
-        assertFalse(
-            AmapCheckInFollowUpPolicy.isSuccessfulRateLimit(
-                page = MapUiPage.RATE_LIMITED,
-                stage = AmapCheckInStage.NONE
-            )
-        )
-        assertTrue(
-            AmapCheckInFollowUpPolicy.isSuccessfulRateLimit(
-                page = MapUiPage.RATE_LIMITED,
-                stage = AmapCheckInStage.SECOND_CLICK_SUBMITTED
-            )
         )
     }
 
@@ -75,6 +62,107 @@ class AmapCheckInFollowUpPolicyTest {
                 action = MapUiAction.CLICK_CHECK_IN,
                 stage = AmapCheckInStage.NONE
             )
+        )
+    }
+
+    // 验证第二次点击后的真实频率提示仍需等待最终成功证据。
+    @Test
+    fun keepsRateLimitUnknownAfterSecondProviderClick() {
+        val evidence = evidence("高德等待两秒后执行第二次打卡")
+
+        assertEquals(
+            MapOperationStatus.UNKNOWN,
+            AmapCheckInFollowUpPolicy.resolveProviderEvidence(
+                evidence = evidence,
+                secondClickSubmitted = false
+            ).resultStatus
+        )
+        val waiting = AmapCheckInFollowUpPolicy.resolveProviderEvidence(
+            evidence = evidence,
+            secondClickSubmitted = true,
+            transientMessage = "打卡太频繁"
+        )
+        assertEquals(MapOperationStatus.UNKNOWN, waiting.resultStatus)
+        assertTrue(waiting.message.contains("地点总数未增加"))
+    }
+
+    // 验证内部等待文案不能伪装成高德真实频率提示。
+    @Test
+    fun ignoresSyntheticRateLimitMessage() {
+        val evidence = evidence("高德等待两秒后执行第二次打卡")
+
+        val waiting = AmapCheckInFollowUpPolicy.resolveProviderEvidence(
+            evidence = evidence,
+            secondClickSubmitted = true
+        )
+
+        assertEquals(evidence, waiting)
+    }
+
+    // 验证真实地址列表会触发入口占位任务清理。
+    @Test
+    fun distinguishesEntryPlaceholderFromRealCandidate() {
+        val placeholder = candidate(
+            name = "当前高德打卡位置",
+            stableHint = "device-real-location"
+        )
+        val historicalPrompt = candidate(
+            name = "当前位置：",
+            stableHint = "当前位置：|江南门窗厂"
+        )
+        val realCandidate = candidate(
+            name = "IN健身工作坊",
+            stableHint = "IN健身工作坊|沪太路1353号"
+        )
+
+        assertTrue(
+            AmapCandidateTransitionPolicy.isEntryPlaceholder(placeholder)
+        )
+        assertTrue(
+            AmapCandidateTransitionPolicy.isEntryPlaceholder(historicalPrompt)
+        )
+        assertFalse(
+            AmapCandidateTransitionPolicy.isEntryPlaceholder(realCandidate)
+        )
+        assertTrue(
+            AmapCandidateTransitionPolicy.hasRealCandidate(
+                listOf(placeholder, realCandidate)
+            )
+        )
+    }
+
+    // 创建高德未知结果证据。
+    private fun evidence(message: String): MapOperationEvidence {
+        return MapOperationEvidence(
+            provider = MapProvider.AMAP,
+            taskId = "task",
+            commandId = "command",
+            profileVersion = "amap-test",
+            page = "BLOCKED",
+            matchedText = "当前位置",
+            viewId = "start",
+            beforeFingerprint = "before",
+            afterFingerprint = "after",
+            resultStatus = MapOperationStatus.UNKNOWN,
+            message = message,
+            observedAtMillis = 100L
+        )
+    }
+
+    // 创建高德候选用于验证入口与真实地点转换策略。
+    private fun candidate(
+        name: String,
+        stableHint: String
+    ): ProviderPlaceCandidate {
+        return ProviderPlaceCandidate(
+            provider = MapProvider.AMAP,
+            name = name,
+            address = "测试地址",
+            distanceText = "100米",
+            completed = false,
+            fingerprint = name,
+            observedAtMillis = 100L,
+            stableHint = stableHint
         )
     }
 }

@@ -48,7 +48,8 @@ class CruiseService : Service() {
             }
         )
         overlayVisible = overlayController.isVisible
-        overlayController.restore()
+        // 暂时停用“巡航中”悬浮界面，保留控制器代码以便后续恢复。
+        // overlayController.restore()
 
         val container = (application as NearbyCheckInApplication)
             .appContainer
@@ -71,7 +72,8 @@ class CruiseService : Service() {
         startId: Int
     ): Int {
         if (intent?.action == ACTION_TOGGLE_OVERLAY) {
-            overlayController.toggle()
+            // 暂时停用“巡航中”悬浮界面的通知切换入口。
+            // overlayController.toggle()
         }
         return START_STICKY
     }
@@ -143,19 +145,20 @@ class CruiseService : Service() {
 
     // 创建包含悬浮雷达切换动作的前台通知。
     private fun buildNotification(contentText: String): Notification {
-        val toggleIntent = Intent(
-            this,
-            CruiseService::class.java
-        ).apply {
-            action = ACTION_TOGGLE_OVERLAY
-        }
-        val pendingIntent = PendingIntent.getService(
-            this,
-            TOGGLE_OVERLAY_REQUEST_CODE,
-            toggleIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
-        )
+        // 暂时停用“巡航中”悬浮界面的通知入口，保留原实现以便后续恢复。
+//        val toggleIntent = Intent(
+//            this,
+//            CruiseService::class.java
+//        ).apply {
+//            action = ACTION_TOGGLE_OVERLAY
+//        }
+//        val pendingIntent = PendingIntent.getService(
+//            this,
+//            TOGGLE_OVERLAY_REQUEST_CODE,
+//            toggleIntent,
+//            PendingIntent.FLAG_UPDATE_CURRENT or
+//                    PendingIntent.FLAG_IMMUTABLE
+//        )
         return NotificationCompat.Builder(
             this,
             NOTIFICATION_CHANNEL_ID
@@ -165,15 +168,15 @@ class CruiseService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .addAction(
-                android.R.drawable.ic_menu_view,
-                if (overlayVisible) {
-                    "隐藏雷达"
-                } else {
-                    "显示雷达"
-                },
-                pendingIntent
-            )
+//            .addAction(
+//                android.R.drawable.ic_menu_view,
+//                if (overlayVisible) {
+//                    "隐藏雷达"
+//                } else {
+//                    "显示雷达"
+//                },
+//                pendingIntent
+//            )
             .build()
     }
 

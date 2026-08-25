@@ -27,6 +27,7 @@ import com.wu.nearbycheckin.core.domain.coordinator.ProviderAutomationCoordinato
 import com.wu.nearbycheckin.core.domain.coordinator.ProviderMovementPolicy
 import com.wu.nearbycheckin.core.domain.coordinator.ProviderRefreshSchedulePolicy
 import com.wu.nearbycheckin.core.model.LocationSnapshot
+import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.core.model.MovementClass
 
 
@@ -42,6 +43,7 @@ class CruiseDiscoveryController(
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var locationManager: LocationManager
     private lateinit var nearbyPoiSearcher: NearbyPoiSearcher
+    private val locationWatchdogPolicy = LocationTrackingWatchdogPolicy()
     private var latestLocation: Location? = null
     private var isPoiSearchRunning = false
     private var lastPoiSearchTimeMillis = 0L
@@ -77,11 +79,31 @@ class CruiseDiscoveryController(
 
     private val continuousScanRunnable = object : Runnable {
 
-        // 静止状态下强制触发下一次 POI 搜索。
+        // 静止状态下同时请求双 Provider 刷新候选列表。
         override fun run() {
             continuousScanScheduled = false
-            providerCoordinator.heartbeat()
+            providerCoordinator.heartbeat(MapProvider.BAIDU)
+            providerCoordinator.heartbeat(MapProvider.AMAP)
             scheduleContinuousScan()
+        }
+    }
+
+    private val locationWatchdogRunnable = object : Runnable {
+
+        // 在系统静默移除定位监听或静止无回调时重新注册真实定位。
+        override fun run() {
+            if (
+                locationWatchdogPolicy.shouldRestart(
+                    latestLocationTimeMillis = latestLocation?.time,
+                    nowMillis = System.currentTimeMillis()
+                )
+            ) {
+                restartLocationTracking()
+            }
+            mainHandler.postDelayed(
+                this,
+                LOCATION_WATCHDOG_INTERVAL_MILLIS
+            )
         }
     }
 
@@ -133,7 +155,14 @@ class CruiseDiscoveryController(
         }
 
         initializeNearbyPoiSearcher()
-        return startLocationTracking()
+        val locationStarted = startLocationTracking()
+        if (locationStarted) {
+            mainHandler.postDelayed(
+                locationWatchdogRunnable,
+                LOCATION_WATCHDOG_INTERVAL_MILLIS
+            )
+        }
+        return locationStarted
     }
 
     // 停止定位、心跳和 POI 搜索并释放 SDK 监听。
@@ -142,6 +171,7 @@ class CruiseDiscoveryController(
             baiduAuthStateListener
         )
         mainHandler.removeCallbacks(continuousScanRunnable)
+        mainHandler.removeCallbacks(locationWatchdogRunnable)
         continuousScanScheduled = false
         latestLocation = null
 
@@ -236,6 +266,29 @@ class CruiseDiscoveryController(
 
         locationManager =
             context.getSystemService(LocationManager::class.java)
+        val providerStarted = registerLocationProviders(fineGranted)
+        if (!providerStarted) {
+            Log.w(TAG, "GPS和网络定位当前均不可用")
+        }
+
+        val lastKnownLocation = if (fineGranted) {
+            locationManager.getLastKnownLocation(
+                LocationManager.GPS_PROVIDER
+            ) ?: locationManager.getLastKnownLocation(
+                LocationManager.NETWORK_PROVIDER
+            )
+        } else {
+            locationManager.getLastKnownLocation(
+                LocationManager.NETWORK_PROVIDER
+            )
+        }
+        lastKnownLocation?.let(::updateLocation)
+        return true
+    }
+
+    // 注册所有已启用且已获授权的真实定位 Provider。
+    @SuppressLint("MissingPermission")
+    private fun registerLocationProviders(fineGranted: Boolean): Boolean {
         var providerStarted = false
         if (
             fineGranted &&
@@ -264,23 +317,35 @@ class CruiseDiscoveryController(
             )
             providerStarted = true
         }
-        if (!providerStarted) {
-            Log.w(TAG, "GPS和网络定位当前均不可用")
-        }
+        return providerStarted
+    }
 
-        val lastKnownLocation = if (fineGranted) {
-            locationManager.getLastKnownLocation(
-                LocationManager.GPS_PROVIDER
-            ) ?: locationManager.getLastKnownLocation(
-                LocationManager.NETWORK_PROVIDER
-            )
-        } else {
-            locationManager.getLastKnownLocation(
-                LocationManager.NETWORK_PROVIDER
-            )
+    // 重新注册被系统资源策略移除的定位监听，不复用过期位置时间。
+    @SuppressLint("MissingPermission")
+    private fun restartLocationTracking() {
+        if (!::locationManager.isInitialized) {
+            return
         }
-        lastKnownLocation?.let(::updateLocation)
-        return true
+        val fineGranted = hasPermission(
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        val coarseGranted = hasPermission(
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (!fineGranted && !coarseGranted) {
+            Log.w(TAG, "定位保活失败：定位权限已被关闭")
+            return
+        }
+        runCatching {
+            locationManager.removeUpdates(locationListener)
+            registerLocationProviders(fineGranted)
+        }.onSuccess { restarted ->
+            if (restarted) {
+                Log.w(TAG, "定位超过30秒未更新，已重新注册定位监听")
+            }
+        }.onFailure { error ->
+            Log.e(TAG, "重新注册定位监听失败", error)
+        }
     }
 
     // 更新最近位置、通知文本并按节流规则请求 POI。
@@ -398,7 +463,8 @@ class CruiseDiscoveryController(
     private companion object {
         const val TAG = "CruiseDiscovery"
         const val LOCATION_UPDATE_INTERVAL_MILLIS = 1_000L
-        const val LOCATION_UPDATE_DISTANCE_METERS = 10F
+        const val LOCATION_UPDATE_DISTANCE_METERS = 0F
+        const val LOCATION_WATCHDOG_INTERVAL_MILLIS = 10_000L
         const val POI_SEARCH_RADIUS_METERS = 1_000
         const val POI_SEARCH_INTERVAL_MILLIS = 30_000L
         const val POI_SEARCH_DISTANCE_METERS = 50F

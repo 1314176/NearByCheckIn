@@ -107,6 +107,121 @@ class ProviderAutomationCoordinatorTest {
     }
 
     @Test
+    fun `高德成功任务写入独立永久键且不会重复入队`() {
+        val fixture = fixture()
+        val candidate = candidate(
+            name = "高德地点A",
+            completed = false,
+            provider = MapProvider.AMAP
+        )
+        fixture.coordinator.resumePendingTasks(MapProvider.AMAP)
+        fixture.coordinator.beginCandidateRefresh(MapProvider.AMAP)
+        fixture.coordinator.replaceCandidates(
+            MapProvider.AMAP,
+            listOf(candidate),
+            "amap-list-1",
+            profileVersion = "amap-v1"
+        )
+        val task = fixture.coordinator.claimNextTask(
+            MapProvider.AMAP,
+            "amap-worker"
+        )!!
+        fixture.coordinator.beginVerification(task.taskId, "amap-command")
+        fixture.coordinator.finishTask(
+            task.taskId,
+            evidence(
+                taskId = task.taskId,
+                status = MapOperationStatus.SUCCESS,
+                provider = MapProvider.AMAP
+            )
+        )
+
+        fixture.coordinator.beginCandidateRefresh(MapProvider.AMAP)
+        fixture.coordinator.replaceCandidates(
+            MapProvider.AMAP,
+            listOf(candidate.copy(fingerprint = "fresh-amap-anchor")),
+            "amap-list-2",
+            profileVersion = "amap-v1"
+        )
+
+        val snapshot = fixture.repository.currentSnapshot()
+        assertTrue(candidate.toPlaceKey() in snapshot.providerCompletedKeys)
+        assertEquals(
+            ProviderTaskStatus.COMPLETED,
+            snapshot.providerTasks.single().status
+        )
+        assertEquals(
+            null,
+            fixture.coordinator.claimNextTask(
+                MapProvider.AMAP,
+                "amap-worker"
+            )
+        )
+    }
+
+    @Test
+    fun `高德插件升级会重开缺少最终证据的旧完成任务`() {
+        val fixture = fixture()
+        val candidate = candidate(
+            name = "高德当前位置",
+            completed = false,
+            provider = MapProvider.AMAP
+        )
+        fixture.coordinator.resumePendingTasks(MapProvider.AMAP)
+        fixture.coordinator.beginCandidateRefresh(MapProvider.AMAP)
+        fixture.coordinator.replaceCandidates(
+            MapProvider.AMAP,
+            listOf(candidate),
+            "amap-list-v1",
+            profileVersion = "amap-v1"
+        )
+        val task = fixture.coordinator.claimNextTask(
+            MapProvider.AMAP,
+            "amap-worker"
+        )!!
+        fixture.coordinator.beginVerification(task.taskId, "amap-command")
+        fixture.coordinator.finishTask(
+            task.taskId,
+            evidence(
+                taskId = task.taskId,
+                status = MapOperationStatus.SUCCESS,
+                provider = MapProvider.AMAP
+            ).copy(
+                profileVersion = "amap-v1",
+                page = "BLOCKED",
+                message = "高德第二次点击收到频率提示",
+                beforeCheckInCount = 221,
+                afterCheckInCount = null
+            )
+        )
+
+        fixture.coordinator.beginCandidateRefresh(MapProvider.AMAP)
+        fixture.coordinator.replaceCandidates(
+            MapProvider.AMAP,
+            listOf(candidate.copy(fingerprint = "fresh-amap-anchor")),
+            "amap-list-v2",
+            profileVersion = "amap-v2"
+        )
+
+        val snapshot = fixture.repository.currentSnapshot()
+        val reopenedTask = snapshot.providerTasks.single()
+        assertEquals(ProviderTaskStatus.QUEUED, reopenedTask.status)
+        assertEquals("fresh-amap-anchor", reopenedTask.candidate.fingerprint)
+        assertFalse(candidate.toPlaceKey() in snapshot.providerCompletedKeys)
+        assertTrue(
+            snapshot.records.none { record ->
+                record.id == "provider-${task.taskId}"
+            }
+        )
+        assertNotNull(
+            fixture.coordinator.claimNextTask(
+                MapProvider.AMAP,
+                "amap-worker"
+            )
+        )
+    }
+
+    @Test
     fun `百度每日额度阻断当天任务并在次日零点自动恢复`() {
         val startMillis = Instant.parse("2026-08-17T10:00:00Z")
             .toEpochMilli()
@@ -320,10 +435,11 @@ class ProviderAutomationCoordinatorTest {
 
     private fun candidate(
         name: String,
-        completed: Boolean
+        completed: Boolean,
+        provider: MapProvider = MapProvider.BAIDU
     ): ProviderPlaceCandidate {
         return ProviderPlaceCandidate(
-            provider = MapProvider.BAIDU,
+            provider = provider,
             name = name,
             address = "上海市地址",
             distanceText = "100m",
@@ -336,10 +452,11 @@ class ProviderAutomationCoordinatorTest {
 
     private fun evidence(
         taskId: String,
-        status: MapOperationStatus
+        status: MapOperationStatus,
+        provider: MapProvider = MapProvider.BAIDU
     ): MapOperationEvidence {
         return MapOperationEvidence(
-            provider = MapProvider.BAIDU,
+            provider = provider,
             taskId = taskId,
             commandId = "command-1",
             profileVersion = "baidu-v1",

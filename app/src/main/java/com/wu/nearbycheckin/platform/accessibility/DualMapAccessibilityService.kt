@@ -185,6 +185,9 @@ class DualMapAccessibilityService : AccessibilityService() {
                 message = message
             )
         ) {
+            if (::amapProviderWorker.isInitialized) {
+                amapProviderWorker.recordAmapRateLimitEvidence(message)
+            }
             saveAutomationStatus("高德地图提示：$message")
         }
     }

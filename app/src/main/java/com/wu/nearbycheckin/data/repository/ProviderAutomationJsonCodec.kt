@@ -151,7 +151,7 @@ internal object ProviderAutomationJsonCodec {
             ),
             amapState = value.enumValueOrDefault(
                 AMAP_STATE,
-                ProviderAutomationState.LEGACY
+                ProviderAutomationState.READY
             ),
             activeProvider = value.enumValueOrNull(ACTIVE_PROVIDER),
             latestLocation = value.optJSONObject(LATEST_LOCATION)

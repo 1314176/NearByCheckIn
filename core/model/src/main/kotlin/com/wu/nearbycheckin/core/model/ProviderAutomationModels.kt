@@ -178,7 +178,7 @@ enum class ProviderAutomationState {
  */
 data class DualMapRuntimeState(
     val baiduState: ProviderAutomationState = ProviderAutomationState.IDLE,
-    val amapState: ProviderAutomationState = ProviderAutomationState.LEGACY,
+    val amapState: ProviderAutomationState = ProviderAutomationState.READY,
     val activeProvider: MapProvider? = null,
     val latestLocation: LocationSnapshot? = null,
     val baiduListStale: Boolean = true,

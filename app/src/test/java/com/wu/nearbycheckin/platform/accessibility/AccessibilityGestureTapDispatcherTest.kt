@@ -6,8 +6,14 @@
 
 package com.wu.nearbycheckin.platform.accessibility
 
+
+import com.wu.nearbycheckin.core.domain.plugin.PluginCommandType
+import com.wu.nearbycheckin.core.model.MapProvider
+
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AccessibilityGestureTapDispatcherTest {
@@ -85,6 +91,91 @@ class AccessibilityGestureTapDispatcherTest {
                 top = 0,
                 right = 0,
                 bottom = 1188
+            )
+        )
+    }
+
+    // 验证百度占用期间排队的高德会在百度下一次执行前获得手势权。
+    @Test
+    fun alternatesWaitingProvidersWithoutStarvation() {
+        val queue = ProviderGestureTurnQueue(staleAfterMillis = 3_000L)
+
+        assertTrue(queue.canAcquire(MapProvider.BAIDU, false, 0L))
+        assertFalse(queue.canAcquire(MapProvider.AMAP, true, 100L))
+        assertFalse(queue.canAcquire(MapProvider.BAIDU, true, 110L))
+        assertFalse(queue.canAcquire(MapProvider.BAIDU, false, 500L))
+        assertTrue(queue.canAcquire(MapProvider.AMAP, false, 500L))
+        assertTrue(queue.canAcquire(MapProvider.BAIDU, false, 501L))
+    }
+
+    // 验证停止重试的 Provider 不会永久阻塞仍在运行的地图。
+    @Test
+    fun removesStaleProviderWaiter() {
+        val queue = ProviderGestureTurnQueue(staleAfterMillis = 3_000L)
+
+        assertFalse(queue.canAcquire(MapProvider.AMAP, true, 0L))
+        assertTrue(queue.canAcquire(MapProvider.BAIDU, false, 3_001L))
+    }
+
+    // 验证高德页面导航绕过可能假成功的节点点击并优先使用真实手势。
+    @Test
+    fun prefersGestureForAmapNavigation() {
+        assertTrue(
+            PluginCommandGesturePolicy.shouldPreferGesture(
+                MapProvider.AMAP,
+                PluginCommandType.NAVIGATE_FOOTPRINT
+            )
+        )
+        assertTrue(
+            PluginCommandGesturePolicy.shouldPreferGesture(
+                MapProvider.AMAP,
+                PluginCommandType.SELECT_CANDIDATE
+            )
+        )
+        assertFalse(
+            PluginCommandGesturePolicy.shouldPreferGesture(
+                MapProvider.BAIDU,
+                PluginCommandType.NAVIGATE_FOOTPRINT
+            )
+        )
+    }
+
+    // 验证只有带正间隔的高德打卡命令会在首次完成后重新定位第二次点击。
+    @Test
+    fun usesDeferredRepeatOnlyForAmapCheckInCommands() {
+        assertTrue(
+            PluginCommandGesturePolicy.shouldUseDeferredRepeat(
+                provider = MapProvider.AMAP,
+                commandType = PluginCommandType.SELECT_CANDIDATE,
+                repeatAfterMillis = 2_000L
+            )
+        )
+        assertTrue(
+            PluginCommandGesturePolicy.shouldUseDeferredRepeat(
+                provider = MapProvider.AMAP,
+                commandType = PluginCommandType.OPEN_CHECK_IN_ENTRY,
+                repeatAfterMillis = 2_000L
+            )
+        )
+        assertFalse(
+            PluginCommandGesturePolicy.shouldUseDeferredRepeat(
+                provider = MapProvider.AMAP,
+                commandType = PluginCommandType.NAVIGATE_MINE,
+                repeatAfterMillis = 2_000L
+            )
+        )
+        assertFalse(
+            PluginCommandGesturePolicy.shouldUseDeferredRepeat(
+                provider = MapProvider.BAIDU,
+                commandType = PluginCommandType.SELECT_CANDIDATE,
+                repeatAfterMillis = 2_000L
+            )
+        )
+        assertFalse(
+            PluginCommandGesturePolicy.shouldUseDeferredRepeat(
+                provider = MapProvider.AMAP,
+                commandType = PluginCommandType.SELECT_CANDIDATE,
+                repeatAfterMillis = 0L
             )
         )
     }

@@ -122,6 +122,9 @@ class MainActivity : ComponentActivity() {
             pendingBaiduPaneReplacement ||
                     viewModel.uiState.value
                         .isBaiduPaneReplacementPending
+        val installedVersionName = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull().orEmpty().ifBlank { "unknown" }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -142,16 +145,18 @@ class MainActivity : ComponentActivity() {
                         MainScreen(
                             state = state,
                             onEvent = viewModel::onEvent,
+                            versionName = installedVersionName,
                             modifier = Modifier.padding(innerPadding)
                         )
-                        Box(
-                            modifier = Modifier
-                                .padding(innerPadding)
-                                .padding(top = 16.dp, end = 16.dp)
-                                .align(Alignment.TopEnd)
-                        ) {
-                            GlowRadarOverlay()
-                        }
+                        // 暂时停用主界面中的“巡航中”状态组件，保留代码以便后续恢复。
+                        // Box(
+                        //     modifier = Modifier
+                        //         .padding(innerPadding)
+                        //         .padding(top = 16.dp, end = 16.dp)
+                        //         .align(Alignment.TopEnd)
+                        // ) {
+                        //     GlowRadarOverlay()
+                        // }
                     }
                 }
             }

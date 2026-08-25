@@ -55,6 +55,7 @@ data class PluginCommand(
     val target: PluginCommandTarget = PluginCommandTarget(),
     val createdAtMillis: Long = 0L,
     val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    val repeatAfterMillis: Long = 0L,
     val evidenceHint: String = ""
 ) {
     companion object {

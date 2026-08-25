@@ -26,6 +26,7 @@ import com.wu.nearbycheckin.core.domain.usecase.SubmitCandidateUseCase
 import com.wu.nearbycheckin.data.repository.LegacyCheckInDataMigrator
 import com.wu.nearbycheckin.data.repository.SharedPreferencesCheckInTransactionRepository
 import com.wu.nearbycheckin.platform.cruise.AndroidCruisePlatformGateway
+import com.wu.nearbycheckin.platform.maps.AmapCheckInPlugin
 import com.wu.nearbycheckin.platform.maps.BaiduCheckInPlugin
 import com.wu.nearbycheckin.core.model.MapProvider
 
@@ -67,8 +68,8 @@ class AppContainer(
             ),
             MapAutomationPluginEntry(
                 provider = MapProvider.AMAP,
-                availability = PluginAvailability.LEGACY,
-                reason = "百度高速连续打卡验收完成后再启用"
+                availability = PluginAvailability.ENABLED,
+                plugin = AmapCheckInPlugin()
             )
         )
     )

@@ -81,6 +81,7 @@ private val logTimeFormatter: DateTimeFormatter =
 fun MainScreen(
     state: MainUiState,
     onEvent: (MainUiEvent) -> Unit,
+    versionName: String,
     modifier: Modifier = Modifier
 ) {
     PrivacyDialog(state, onEvent)
@@ -140,7 +141,7 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
-            text = "当前软件版本：v3.0.2     auther：Mr.Wu",
+            text = "当前软件版本：v$versionName     auther：Mr.Wu",
             modifier = Modifier.fillMaxWidth(),
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
             color = RadarColors.TextGray,
@@ -935,7 +936,8 @@ private fun MainScreenPreview() {
                 amapInstalled = true,
                 automationStatus = "等待开始"
             ),
-            onEvent = {}
+            onEvent = {},
+            versionName = "3.0.12"
         )
     }
 }

@@ -14,25 +14,42 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 
+import com.wu.nearbycheckin.core.model.MapProvider
+
 class AccessibilityGestureTapDispatcher(
     private val service: AccessibilityService
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingTaps = ArrayDeque<TapRequest>()
+    private val providerTurnQueue = ProviderGestureTurnQueue()
     private var isDispatching = false
     private var commandReservedUntilMillis = 0L
 
     // 判断共享命令闸门当前是否允许领取新的 UI 任务。
-    fun canExecuteCommand(): Boolean {
-        return !isDispatching &&
-                SystemClock.elapsedRealtime() >= commandReservedUntilMillis
+    fun canExecuteCommand(provider: MapProvider): Boolean {
+        val nowMillis = SystemClock.elapsedRealtime()
+        return providerTurnQueue.canAcquire(
+            provider = provider,
+            busy = isDispatching || nowMillis < commandReservedUntilMillis,
+            nowMillis = nowMillis
+        )
     }
 
     // 为节点点击和手势统一申请短时全局命令执行权。
-    fun <T> executeAtomically(block: () -> T): T? {
+    fun <T> executeAtomically(
+        provider: MapProvider,
+        block: () -> T
+    ): T? {
         val nowMillis = SystemClock.elapsedRealtime()
-        if (!canExecuteCommand()) {
+        if (
+            !providerTurnQueue.canAcquire(
+                provider = provider,
+                busy = isDispatching ||
+                        nowMillis < commandReservedUntilMillis,
+                nowMillis = nowMillis
+            )
+        ) {
             return null
         }
         commandReservedUntilMillis = nowMillis + COMMAND_SETTLE_MILLIS
@@ -54,12 +71,14 @@ class AccessibilityGestureTapDispatcher(
     fun tapForPackage(
         x: Int,
         y: Int,
-        packageName: String
+        packageName: String,
+        onCompleted: ((Boolean) -> Unit)? = null
     ): Boolean {
         return enqueuePackageTap(
             x = x,
             y = y,
-            packageName = packageName
+            packageName = packageName,
+            onCompleted = onCompleted
         )
     }
 
@@ -68,13 +87,15 @@ class AccessibilityGestureTapDispatcher(
         x: Int,
         y: Int,
         packageName: String,
-        secondTapDelayMillis: Long
+        secondTapDelayMillis: Long,
+        onCompleted: ((Boolean) -> Unit)? = null
     ): Boolean {
         return enqueuePackageTap(
             x = x,
             y = y,
             packageName = packageName,
-            secondTapDelayMillis = secondTapDelayMillis
+            secondTapDelayMillis = secondTapDelayMillis,
+            onCompleted = onCompleted
         )
     }
 
@@ -83,7 +104,8 @@ class AccessibilityGestureTapDispatcher(
         x: Int,
         y: Int,
         packageName: String,
-        secondTapDelayMillis: Long = 0L
+        secondTapDelayMillis: Long = 0L,
+        onCompleted: ((Boolean) -> Unit)? = null
     ): Boolean {
         val focusPoint = findPackageWindowBounds(packageName)?.let { bounds ->
             PackageGestureFocusPolicy.select(
@@ -103,7 +125,8 @@ class AccessibilityGestureTapDispatcher(
                     PackageGestureTimingPolicy.secondTapStartMillis(
                         requestedDelayMillis = secondTapDelayMillis,
                         tapDurationMillis = PACKAGE_TAP_DURATION_MILLIS
-                    )
+                    ),
+                onCompleted = onCompleted
             )
         )
     }
@@ -121,6 +144,7 @@ class AccessibilityGestureTapDispatcher(
     fun clear() {
         mainHandler.removeCallbacksAndMessages(null)
         pendingTaps.clear()
+        providerTurnQueue.clear()
     }
 
     // 派发队首点击并在系统回调后继续处理下一条。
@@ -172,6 +196,9 @@ class AccessibilityGestureTapDispatcher(
                 override fun onCompleted(
                     gestureDescription: GestureDescription?
                 ) {
+                    if (!isFocusPrimer) {
+                        tap.onCompleted?.invoke(true)
+                    }
                     continueDispatchAfterGesture(isFocusPrimer)
                 }
 
@@ -179,6 +206,9 @@ class AccessibilityGestureTapDispatcher(
                 override fun onCancelled(
                     gestureDescription: GestureDescription?
                 ) {
+                    if (!isFocusPrimer) {
+                        tap.onCompleted?.invoke(false)
+                    }
                     isDispatching = false
                     dispatchNext()
                 }
@@ -186,6 +216,9 @@ class AccessibilityGestureTapDispatcher(
             null
         )
         if (!accepted) {
+            if (!isFocusPrimer) {
+                tap.onCompleted?.invoke(false)
+            }
             isDispatching = false
             dispatchNext()
         }
@@ -231,7 +264,8 @@ class AccessibilityGestureTapDispatcher(
         val durationMillis: Long,
         val focusPoint: GestureTapPoint? = null,
         val secondTapStartMillis: Long = 0L,
-        val focusPrimed: Boolean = false
+        val focusPrimed: Boolean = false,
+        val onCompleted: ((Boolean) -> Unit)? = null
     )
 
     private companion object {
@@ -239,6 +273,49 @@ class AccessibilityGestureTapDispatcher(
         const val PACKAGE_TAP_DURATION_MILLIS = 80L
         const val PACKAGE_FOCUS_SETTLE_DELAY_MILLIS = 80L
         const val COMMAND_SETTLE_MILLIS = 350L
+    }
+}
+
+internal class ProviderGestureTurnQueue(
+    private val staleAfterMillis: Long = DEFAULT_STALE_AFTER_MILLIS
+) {
+    private val waitingProviders = linkedMapOf<MapProvider, Long>()
+
+    // 清空服务生命周期结束前尚未取得执行权的 Provider。
+    fun clear() {
+        waitingProviders.clear()
+    }
+
+    // 按首次等待顺序发放共享手势执行权并清理已经停止轮询的旧请求。
+    fun canAcquire(
+        provider: MapProvider,
+        busy: Boolean,
+        nowMillis: Long
+    ): Boolean {
+        removeStaleWaiters(nowMillis)
+        if (busy) {
+            waitingProviders[provider] = nowMillis
+            return false
+        }
+        val nextProvider = waitingProviders.keys.firstOrNull()
+        if (nextProvider != null && nextProvider != provider) {
+            waitingProviders[provider] = nowMillis
+            return false
+        }
+        waitingProviders.remove(provider)
+        return true
+    }
+
+    // 移除超过多个 Worker 轮询周期仍未重试的失效等待者。
+    private fun removeStaleWaiters(nowMillis: Long) {
+        waitingProviders.entries.removeAll { entry ->
+            nowMillis < entry.value ||
+                    nowMillis - entry.value > staleAfterMillis
+        }
+    }
+
+    private companion object {
+        const val DEFAULT_STALE_AFTER_MILLIS = 3_000L
     }
 }
 
