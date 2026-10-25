@@ -14,8 +14,6 @@ sealed interface MainUiEffect {
 
     data object RequestLocationPermission : MainUiEffect
 
-    data object RequestNotificationPermission : MainUiEffect
-
     data object RequestOverlayPermission : MainUiEffect
 
     data object OpenAccessibilitySettings : MainUiEffect

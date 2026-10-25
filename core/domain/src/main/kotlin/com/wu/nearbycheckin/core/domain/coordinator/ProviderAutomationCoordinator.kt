@@ -154,7 +154,20 @@ class ProviderAutomationCoordinator(
                 candidate -> candidate.toPlaceKey()
             }
             val existingTasks = snapshot.providerTasks.map { task ->
-                if (task.taskId in reopenedAmapTaskIds) {
+                if (
+                    task.provider == provider &&
+                    task.candidate.isDeviceLocationCandidate() &&
+                    task.candidateKey !in visibleKeys &&
+                    task.status in setOf(ProviderTaskStatus.QUEUED, ProviderTaskStatus.RETRY_WAIT)
+                ) {
+                    task.copy(
+                        status = ProviderTaskStatus.CANCELLED,
+                        updatedAtMillis = nowMillis,
+                        leaseOwner = "",
+                        leaseUntilMillis = 0L,
+                        lastError = "真实位置已更新，取消旧位置等待任务"
+                    )
+                } else if (task.taskId in reopenedAmapTaskIds) {
                     latestCandidatesByKey[task.candidateKey]?.let {
                         candidate -> task.copy(
                             candidate = candidate,
@@ -182,8 +195,11 @@ class ProviderAutomationCoordinator(
                 } else if (
                     task.provider == provider &&
                     task.status == ProviderTaskStatus.FAILED &&
-                    profileVersion.isNotBlank() &&
-                    task.evidence?.profileVersion != profileVersion
+                    ((profileVersion.isNotBlank() &&
+                        task.evidence?.profileVersion != profileVersion) ||
+                        (task.evidence?.resultStatus in setOf(MapOperationStatus.TIMEOUT,
+                            MapOperationStatus.FAILED, MapOperationStatus.UNKNOWN) &&
+                            nowMillis - task.updatedAtMillis >= policy.failedRetryCooldownMillis))
                 ) {
                     latestCandidatesByKey[task.candidateKey]?.let {
                         candidate -> task.copy(
@@ -277,6 +293,12 @@ class ProviderAutomationCoordinator(
         provider: MapProvider,
         workerId: String
     ): ProviderCheckInTask? = synchronized(lock) {
+        if (repository.currentSnapshot().providerTasks.any { task ->
+                task.provider == provider &&
+                        (task.status == ProviderTaskStatus.VERIFYING ||
+                                task.status == ProviderTaskStatus.ACTIVE &&
+                                task.leaseUntilMillis > clock.nowMillis())
+            }) return@synchronized null
         val task = repository.claimNextProviderTask(
             provider = provider,
             workerId = workerId,
@@ -331,6 +353,11 @@ class ProviderAutomationCoordinator(
         val task = snapshot.providerTasks.firstOrNull { item ->
             item.taskId == taskId
         } ?: return@synchronized false
+        if (task.status in TERMINAL_TASK_STATUSES || task.status == ProviderTaskStatus.BLOCKED ||
+            evidence.provider != task.provider ||
+            (evidence.commandId.isNotBlank() && task.commandId.isNotBlank() &&
+                    evidence.commandId != task.commandId)
+        ) return@synchronized false
         val nowMillis = clock.nowMillis()
         val completed = when (evidence.resultStatus) {
             MapOperationStatus.SUCCESS -> repository.completeProviderTask(
@@ -486,6 +513,13 @@ class ProviderAutomationCoordinator(
         repository.updateSnapshot { snapshot ->
             val evidenceText = evidence.take(MAX_DIAGNOSTIC_LENGTH)
             val runtime = snapshot.providerRuntime
+            val unchanged = when (provider) {
+                MapProvider.BAIDU -> runtime.baiduPluginPage == page &&
+                        runtime.baiduPluginAction == action && runtime.baiduPluginEvidence == evidenceText
+                MapProvider.AMAP -> runtime.amapPluginPage == page &&
+                        runtime.amapPluginAction == action && runtime.amapPluginEvidence == evidenceText
+            }
+            if (unchanged) return@updateSnapshot snapshot
             snapshot.copy(
                 providerRuntime = when (provider) {
                     MapProvider.BAIDU -> runtime.copy(
@@ -849,7 +883,8 @@ data class ProviderAutomationPolicy(
     val leaseDurationMillis: Long = 60_000L,
     val maxAttempts: Int = 3,
     val initialRetryDelayMillis: Long = 2_000L,
-    val maximumRetryDelayMillis: Long = 30_000L
+    val maximumRetryDelayMillis: Long = 30_000L,
+    val failedRetryCooldownMillis: Long = 60_000L
 ) {
 
     // 根据已发出尝试次数计算有上限的指数退避时间。

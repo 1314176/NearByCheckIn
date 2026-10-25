@@ -63,6 +63,13 @@ data class ProviderPlaceCandidate(
     val stableHint: String = ""
 ) {
 
+    // 同时识别旧入口标识和附带真实坐标的新标识，避免误当作地点名称。
+    fun isDeviceLocationCandidate(): Boolean {
+        return provider == MapProvider.AMAP &&
+                (stableHint == "device-real-location" ||
+                        stableHint.startsWith("device-real-location:"))
+    }
+
     // 生成用于持久化永久去重的 Provider 维度地点键。
     fun toPlaceKey(): ProviderPlaceKey {
         return ProviderPlaceKey(

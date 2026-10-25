@@ -11,6 +11,7 @@ import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommand
+import com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandType
 import com.wu.nearbycheckin.core.model.MapProvider
 
@@ -27,10 +28,14 @@ class PluginCommandExecutor(
         rootNode: AccessibilityNodeInfo?,
         packageName: String,
         command: PluginCommand,
-        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)? = null
+        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)? = null,
+        forceGesture: Boolean = false
     ): PluginCommandExecutionResult {
         if (rootNode == null) {
             return PluginCommandExecutionResult(false, "窗口根节点为空")
+        }
+        if (rootNode.packageName?.toString() != packageName) {
+            return PluginCommandExecutionResult(false, "目标窗口包名已经变化，取消旧命令")
         }
         if (
             command.type == PluginCommandType.READ_CANDIDATES ||
@@ -47,7 +52,8 @@ class PluginCommandExecutor(
                 rootNode,
                 packageName,
                 command,
-                onDeferredRepeatFirstTapCompleted
+                onDeferredRepeatFirstTapCompleted,
+                forceGesture
             )
         } ?: PluginCommandExecutionResult(
             false,
@@ -60,7 +66,8 @@ class PluginCommandExecutor(
         rootNode: AccessibilityNodeInfo,
         packageName: String,
         command: PluginCommand,
-        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?
+        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?,
+        forceGesture: Boolean
     ): PluginCommandExecutionResult {
         return when (command.type) {
             PluginCommandType.READ_CANDIDATES,
@@ -75,7 +82,8 @@ class PluginCommandExecutor(
                 rootNode,
                 packageName,
                 command,
-                onDeferredRepeatFirstTapCompleted
+                onDeferredRepeatFirstTapCompleted,
+                forceGesture
             )
         }
     }
@@ -85,24 +93,32 @@ class PluginCommandExecutor(
         rootNode: AccessibilityNodeInfo,
         packageName: String,
         command: PluginCommand,
-        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?
+        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?,
+        forceGesture: Boolean
     ): PluginCommandExecutionResult {
         val candidates = mutableListOf<NodeWithFingerprint>()
         collectNodes(rootNode, "0", candidates)
-        val target = candidates.firstOrNull { item ->
-            command.target.nodeFingerprint.isNotBlank() &&
-                    item.fingerprint == command.target.nodeFingerprint
-        } ?: candidates.firstOrNull { item ->
-            command.target.viewId.isNotBlank() &&
-                    item.node.viewIdResourceName == command.target.viewId
-        } ?: candidates.firstOrNull { item ->
-            item.node.labels().any { value ->
-                command.target.labels.any { label ->
-                    value == label || value.startsWith("$label,") ||
-                            value.startsWith("$label，")
-                }
-            }
+        val rootBounds = Rect().also(rootNode::getBoundsInScreen)
+        val visibleCandidates = candidates.filter { item ->
+            val bounds = Rect().also(item.node::getBoundsInScreen)
+            PluginCommandTargetBoundsPolicy.selectVisiblePoint(
+                targetLeft = bounds.left,
+                targetTop = bounds.top,
+                targetRight = bounds.right,
+                targetBottom = bounds.bottom,
+                windowLeft = rootBounds.left,
+                windowTop = rootBounds.top,
+                windowRight = rootBounds.right,
+                windowBottom = rootBounds.bottom
+            ) != null
         }
+        val target = PluginCommandTargetPolicy.select(
+            candidates = visibleCandidates,
+            target = command.target,
+            fingerprint = { it.fingerprint },
+            viewId = { it.node.viewIdResourceName.orEmpty() },
+            nodeLabels = { it.node.labels() }
+        )
         if (target == null) {
             return PluginCommandExecutionResult(
                 false,
@@ -113,14 +129,33 @@ class PluginCommandExecutor(
         if (bounds.width() <= 0 || bounds.height() <= 0) {
             return PluginCommandExecutionResult(false, "目标节点边界无效")
         }
+        val visiblePoint = PluginCommandTargetBoundsPolicy.selectVisiblePoint(
+            targetLeft = bounds.left,
+            targetTop = bounds.top,
+            targetRight = bounds.right,
+            targetBottom = bounds.bottom,
+            windowLeft = rootBounds.left,
+            windowTop = rootBounds.top,
+            windowRight = rootBounds.right,
+            windowBottom = rootBounds.bottom
+        ) ?: return PluginCommandExecutionResult(
+            false,
+            "目标节点不在当前窗口可见区域"
+        )
+        // 结果确认优先点击按钮本身，避免聚焦手势碰到弹层内容；无变化时再改用手势。
+        if (!forceGesture && command.type == PluginCommandType.DISMISS_RESULT &&
+            target.node.isEnabled && target.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        ) {
+            return PluginCommandExecutionResult(true, "已提交结果确认节点点击")
+        }
         if (
-            PluginCommandGesturePolicy.shouldPreferGesture(
+            forceGesture || PluginCommandGesturePolicy.shouldPreferGesture(
                 provider = command.provider,
                 commandType = command.type
             )
         ) {
             return submitGesture(
-                bounds,
+                visiblePoint,
                 packageName,
                 command,
                 onDeferredRepeatFirstTapCompleted
@@ -134,7 +169,7 @@ class PluginCommandExecutor(
             return PluginCommandExecutionResult(true, "已执行节点点击")
         }
         return submitGesture(
-            bounds,
+            visiblePoint,
             packageName,
             command,
             onDeferredRepeatFirstTapCompleted
@@ -143,7 +178,7 @@ class PluginCommandExecutor(
 
     // 按目标实时边界提交目标应用内的真实屏幕点击手势。
     private fun submitGesture(
-        bounds: Rect,
+        point: GestureTapPoint,
         packageName: String,
         command: PluginCommand,
         onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?
@@ -154,8 +189,8 @@ class PluginCommandExecutor(
             repeatAfterMillis = command.repeatAfterMillis
         )
         val accepted = gestureDispatcher.tapForPackage(
-            x = bounds.centerX(),
-            y = bounds.centerY(),
+            x = point.x,
+            y = point.y,
             packageName = packageName,
             onCompleted = onDeferredRepeatFirstTapCompleted
                 .takeIf { deferredRepeat }
@@ -259,6 +294,66 @@ class PluginCommandExecutor(
         const val MAX_DEPTH = 32
         const val MAX_COUNT = 2_000
         const val MAX_ANCESTOR_DEPTH = 20
+    }
+}
+
+internal object PluginCommandTargetBoundsPolicy {
+
+    // 返回目标与当前窗口可见交集的中心点，避免分屏裁切后点击落入另一地图。
+    fun selectVisiblePoint(
+        targetLeft: Int,
+        targetTop: Int,
+        targetRight: Int,
+        targetBottom: Int,
+        windowLeft: Int,
+        windowTop: Int,
+        windowRight: Int,
+        windowBottom: Int
+    ): GestureTapPoint? {
+        val left = maxOf(targetLeft, windowLeft)
+        val top = maxOf(targetTop, windowTop)
+        val right = minOf(targetRight, windowRight)
+        val bottom = minOf(targetBottom, windowBottom)
+        if (right <= left || bottom <= top) {
+            return null
+        }
+        return GestureTapPoint(
+            x = left + (right - left) / 2,
+            y = top + (bottom - top) / 2
+        )
+    }
+}
+
+internal object PluginCommandTargetPolicy {
+
+    // 固定目标失效必须重新采集页面，不能回退点击同名的模板入口。
+    fun <T> select(
+        candidates: List<T>,
+        target: PluginCommandTarget,
+        fingerprint: (T) -> String,
+        viewId: (T) -> String,
+        nodeLabels: (T) -> List<String>
+    ): T? {
+        if (target.nodeFingerprint.isNotBlank()) {
+            return candidates.firstOrNull { fingerprint(it) == target.nodeFingerprint }
+        }
+        return candidates.firstOrNull {
+            target.viewId.isNotBlank() && viewId(it) == target.viewId
+        } ?: PluginCommandLabelPolicy.select(candidates, target.labels, nodeLabels)
+    }
+}
+
+internal object PluginCommandLabelPolicy {
+
+    // 按命令标签的优先级选择按钮，每个标签先精确匹配再兼容附带描述。
+    fun <T> select(candidates: List<T>, labels: List<String>, nodeLabels: (T) -> List<String>): T? {
+        for (label in labels) {
+            candidates.firstOrNull { label in nodeLabels(it) }?.let { return it }
+            candidates.firstOrNull { item ->
+                nodeLabels(item).any { it.startsWith("$label,") || it.startsWith("$label，") }
+            }?.let { return it }
+        }
+        return null
     }
 }
 

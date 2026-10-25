@@ -26,6 +26,61 @@ class AmapCheckInPluginTest {
 
     private val plugin = AmapCheckInPlugin()
 
+    // 页面切到角落统计或数量跨越多个地点时，不能冒充本次单地点成功。
+    @Test
+    fun rejectsCounterScopeChangeAndLargeJump() {
+        plugin.inspect(window(node("地点 220个"), node("开始打卡")))
+        plugin.buildSelectAction(currentLocationCandidate())
+        assertEquals(MapOperationStatus.UNKNOWN, plugin.verifyResult(window(
+            node("已点亮 221 个角落"), node("开始打卡")
+        )).resultStatus)
+        assertEquals(MapOperationStatus.UNKNOWN, plugin.verifyResult(window(
+            node("地点 400个"), node("开始打卡")
+        )).resultStatus)
+        assertEquals(MapOperationStatus.UNKNOWN, plugin.verifyResult(window(
+            node("地点 0个"), node("开始打卡")
+        )).resultStatus)
+    }
+
+    // 移动中重新读取按钮及生成二次点击，不得覆盖首次点击前的统计基准。
+    @Test
+    fun preservesBaselineAcrossEntryFollowUp() {
+        plugin.inspect(window(node("地点 220个"), node("开始打卡")))
+        val first = plugin.buildSelectAction(currentLocationCandidate())
+        val changed = plugin.inspect(window(node("地点 221个"), node("开始打卡")))
+        plugin.buildNextAction(changed)
+        val result = plugin.verifyResult(window(node("地点 221个"), node("开始打卡")))
+        assertEquals(MapOperationStatus.SUCCESS, result.resultStatus)
+        assertEquals(220, result.beforeCheckInCount)
+        assertEquals(first.commandId, result.commandId)
+    }
+
+    // 验证屏幕外的旧卡片统计不会冒充当前任务的地点数量增长。
+    @Test
+    fun ignoresOffscreenCountDuringVerification() {
+        plugin.inspect(window(node("地点 220个"), node("开始打卡", fingerprint = "start")))
+        plugin.buildSelectAction(currentLocationCandidate())
+        val evidence = plugin.verifyResult(window(
+            node("", viewId = "android:id/content", top = 1212, right = 1080, bottom = 2400),
+            node("地点 221个", left = -200, top = 1400, right = 0),
+            node("地点 220个", top = 1400),
+            node("开始打卡", fingerprint = "start", top = 2000)
+        ))
+        assertEquals(MapOperationStatus.UNKNOWN, evidence.resultStatus)
+        assertEquals(220, evidence.afterCheckInCount)
+    }
+
+    // 验证附带真实坐标的入口候选仍使用真实按钮并安排第二次点击。
+    @Test
+    fun selectsCoordinateBoundEntryWithRepeat() {
+        val candidate = plugin.readCandidates(
+            window(node("开始打卡", fingerprint = "start"))
+        ).single().copy(stableHint = "device-real-location:31.26930,121.43831")
+        val command = plugin.buildSelectAction(candidate)
+        assertEquals(listOf("开始打卡", "打卡"), command.target.labels)
+        assertEquals(2_000L, command.repeatAfterMillis)
+    }
+
     // 验证开始打卡页生成当前真实位置候选。
     @Test
     fun createsCurrentLocationCandidateFromStartPage() {
@@ -237,6 +292,52 @@ class AmapCheckInPluginTest {
         assertEquals(PluginPage.SUCCESS.name, evidence.page)
     }
 
+    // 验证高德成功页优先生成自动点击“收下”的关闭命令。
+    @Test
+    fun buildsDismissCommandForSuccessPage() {
+        val state = plugin.inspect(
+            window(
+                node("添加回忆"),
+                node("31.2304°N"),
+                node("121.4737°E"),
+                node("2026-08-25"),
+                node("收下")
+            )
+        )
+
+        val command = plugin.buildNextAction(state)
+
+        assertEquals(PluginPage.SUCCESS, state.page)
+        assertEquals(PluginCommandType.DISMISS_RESULT, command?.type)
+        assertEquals("收下", command?.target?.labels?.first())
+    }
+
+    // 验证横向卡片容器中已经移出当前窗口的旧结果卡不会阻断后续打卡。
+    @Test
+    fun ignoresOffscreenSuccessCard() {
+        val page = plugin.inspect(
+            window(
+                node(
+                    "",
+                    fingerprint = "content",
+                    viewId = "android:id/content",
+                    left = 0,
+                    top = 1_212,
+                    right = 1_080,
+                    bottom = 2_400
+                ),
+                node("打卡", fingerprint = "start", left = 899, top = 2_211, right = 974),
+                node("添加回忆", left = -12_463, top = 1_243, right = 0),
+                node("31.3°N", left = -12_490, top = 1_318, right = 0),
+                node("121.4°E", left = -12_489, top = 1_356, right = 0),
+                node("2026.08.25", left = -12_463, top = 2_199, right = 0),
+                node("收下", left = -12_463, top = 2_279, right = 0)
+            )
+        )
+
+        assertEquals(PluginPage.CHECK_IN_ENTRY, page.page)
+    }
+
     // 验证现场“地点 220 个”增加可作为可追踪的最终成功证据。
     @Test
     fun verifiesCheckInCountIncrease() {
@@ -318,15 +419,22 @@ class AmapCheckInPluginTest {
         text: String,
         parent: String = "root",
         fingerprint: String = text,
-        top: Int = 0
+        viewId: String = "",
+        left: Int = 0,
+        top: Int = 0,
+        right: Int = 100,
+        bottom: Int = top + 40
     ): PluginNodeSnapshot {
         return PluginNodeSnapshot(
             text = text,
+            viewId = viewId,
             clickable = fingerprint == "place-name" ||
                     fingerprint == "start" ||
                     fingerprint.startsWith("place-"),
+            left = left,
             top = top,
-            bottom = top + 40,
+            right = right,
+            bottom = bottom,
             parentFingerprint = parent,
             fingerprint = fingerprint
         )

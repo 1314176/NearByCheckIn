@@ -6,6 +6,10 @@
 
 package com.wu.nearbycheckin.core.domain.coordinator
 
+import kotlin.math.asin
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 import com.wu.nearbycheckin.core.model.MovementClass
 import com.wu.nearbycheckin.core.model.LocationSnapshot
@@ -62,7 +66,7 @@ class ProviderMovementPolicy(
 }
 
 /**
- * 提供百度移动、静止、耗尽和高速等待稳定的刷新间隔。
+ * 提供双 Provider 移动、静止、耗尽和高速等待稳定的刷新间隔。
  */
 class ProviderRefreshSchedulePolicy(
     private val staticActiveMillis: Long = 5_000L,
@@ -105,7 +109,7 @@ class ProviderRefreshSchedulePolicy(
 }
 
 /**
- * 以最近一次已提交候选为基准限制百度打卡最小间隔。
+ * 以最近一次已提交候选为基准限制单个 Provider 打卡最小间隔。
  */
 class ProviderSelectionRateLimiter(
     private val schedulePolicy: ProviderRefreshSchedulePolicy =
@@ -145,5 +149,23 @@ class ProviderLocationFreshnessPolicy(
                 location.isUsable() &&
                 location.timestampMillis >= nowMillis - maxAgeMillis &&
                 location.timestampMillis <= nowMillis + maxFutureMillis
+    }
+}
+
+/** 判断旧候选列表是否已经无法代表当前真实位置。 */
+class ProviderCandidateListFreshnessPolicy {
+
+    // 列表超过三十秒或真实位移扣除定位误差后超过五百米时，先返回入口重新读取。
+    fun shouldRefresh(origin: LocationSnapshot?, current: LocationSnapshot?,
+                      openedAtMillis: Long, nowMillis: Long): Boolean {
+        if (nowMillis - openedAtMillis >= 30_000L) return true
+        if (origin == null || current == null) return false
+        val lat1 = Math.toRadians(origin.latitude)
+        val lat2 = Math.toRadians(current.latitude)
+        val deltaLon = Math.toRadians(current.longitude - origin.longitude)
+        val h = sin((lat2 - lat1) / 2).let { it * it } +
+                cos(lat1) * cos(lat2) * sin(deltaLon / 2).let { it * it }
+        val distance = 2 * 6_371_000.0 * asin(sqrt(h.coerceIn(0.0, 1.0)))
+        return distance - origin.accuracyMeters - current.accuracyMeters > 500.0
     }
 }

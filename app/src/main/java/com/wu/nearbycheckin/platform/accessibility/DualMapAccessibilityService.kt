@@ -70,42 +70,52 @@ class DualMapAccessibilityService : AccessibilityService() {
     // 装配分屏控制器与命令 Worker 并恢复未完成事务。
     override fun onServiceConnected() {
         super.onServiceConnected()
-        splitController = DualMapSplitController(
-            service = this,
-            inspectWindows = ::inspectCurrentWindows,
-            onStatusChanged = ::saveAutomationStatus
-        )
-        gestureTapDispatcher = AccessibilityGestureTapDispatcher(this)
-        baiduProviderWorker = ProviderAutomationWorker(
-            service = this,
-            repository = appContainer.transactionRepository,
-            coordinator = appContainer.providerAutomationCoordinator,
-            registry = appContainer.mapAutomationPluginRegistry,
-            provider = MapProvider.BAIDU,
-            gestureDispatcher = gestureTapDispatcher,
-            onStatusChanged = ::saveAutomationStatus
-        )
-        amapProviderWorker = ProviderAutomationWorker(
-            service = this,
-            repository = appContainer.transactionRepository,
-            coordinator = appContainer.providerAutomationCoordinator,
-            registry = appContainer.mapAutomationPluginRegistry,
-            provider = MapProvider.AMAP,
-            gestureDispatcher = gestureTapDispatcher,
-            onStatusChanged = ::saveAutomationStatus
-        )
+        AccessibilityServiceConnectionState.markDisconnected()
+        try {
+            // 服务重新连接时先释放旧轮询，避免同一地图同时存在多组 Worker。
+            releaseAutomationComponents()
+            splitController = DualMapSplitController(
+                service = this,
+                inspectWindows = ::inspectCurrentWindows,
+                onStatusChanged = ::saveAutomationStatus
+            )
+            gestureTapDispatcher = AccessibilityGestureTapDispatcher(this)
+            baiduProviderWorker = ProviderAutomationWorker(
+                service = this,
+                repository = appContainer.transactionRepository,
+                coordinator = appContainer.providerAutomationCoordinator,
+                registry = appContainer.mapAutomationPluginRegistry,
+                provider = MapProvider.BAIDU,
+                gestureDispatcher = gestureTapDispatcher,
+                onStatusChanged = ::saveAutomationStatus
+            )
+            amapProviderWorker = ProviderAutomationWorker(
+                service = this,
+                repository = appContainer.transactionRepository,
+                coordinator = appContainer.providerAutomationCoordinator,
+                registry = appContainer.mapAutomationPluginRegistry,
+                provider = MapProvider.AMAP,
+                gestureDispatcher = gestureTapDispatcher,
+                onStatusChanged = ::saveAutomationStatus
+            )
 
-        saveAutomationStatus("双地图无障碍服务已连接")
-        appContainer.checkInCoordinator.resumePendingTransactions()
-        resumeCruiseServiceIfNeeded()
-        inspectCurrentWindows("服务连接")
-        baiduProviderWorker.start()
-        amapProviderWorker.start(AMAP_WORKER_START_DELAY_MILLIS)
-        mainHandler.post(autoSplitRequestRunnable)
-        mainHandler.postDelayed(
-            heartbeatRunnable,
-            HEARTBEAT_LOG_INTERVAL_MILLIS
-        )
+            saveAutomationStatus("双地图无障碍服务已连接")
+            appContainer.checkInCoordinator.resumePendingTransactions()
+            resumeCruiseServiceIfNeeded()
+            inspectCurrentWindows("服务连接")
+            baiduProviderWorker.start()
+            amapProviderWorker.start(AMAP_WORKER_START_DELAY_MILLIS)
+            mainHandler.post(autoSplitRequestRunnable)
+            mainHandler.postDelayed(
+                heartbeatRunnable,
+                HEARTBEAT_LOG_INTERVAL_MILLIS
+            )
+            AccessibilityServiceConnectionState.markConnected()
+        } catch (error: RuntimeException) {
+            AccessibilityServiceConnectionState.markDisconnected()
+            runCatching { releaseAutomationComponents() }
+            Log.e(TAG, "无障碍自动化组件初始化失败，已阻止服务崩溃", error)
+        }
     }
 
     // 在进程或安装更新后恢复仍处于运行状态的前台定位服务。
@@ -200,6 +210,21 @@ class DualMapAccessibilityService : AccessibilityService() {
 
     // 停止轮询、分屏和命令执行组件。
     override fun onDestroy() {
+        AccessibilityServiceConnectionState.markDisconnected()
+        releaseAutomationComponents()
+        super.onDestroy()
+    }
+
+    // 取消绑定时立即停止使用失效的窗口连接，保留会话供下次连接恢复。
+    override fun onUnbind(intent: Intent?): Boolean {
+        AccessibilityServiceConnectionState.markDisconnected()
+        releaseAutomationComponents()
+        saveAutomationStatus("无障碍服务已断开，自动点击暂停，等待重新连接")
+        return super.onUnbind(intent)
+    }
+
+    // 统一释放轮询和手势，支持重复连接、取消绑定及服务销毁。
+    private fun releaseAutomationComponents() {
         mainHandler.removeCallbacksAndMessages(null)
         if (::splitController.isInitialized) {
             splitController.stop()
@@ -213,7 +238,6 @@ class DualMapAccessibilityService : AccessibilityService() {
         if (::gestureTapDispatcher.isInitialized) {
             gestureTapDispatcher.clear()
         }
-        super.onDestroy()
     }
 
     // 消费有效分屏请求并避免与当前命令并发。
@@ -336,4 +360,26 @@ class DualMapAccessibilityService : AccessibilityService() {
             AMAP_PACKAGE_NAME
         )
     }
+}
+
+/**
+ * 在应用进程内记录无障碍服务是否已经完成自动化组件装配。
+ */
+internal object AccessibilityServiceConnectionState {
+
+    @Volatile
+    private var connected = false
+
+    // 标记服务及其自动化组件已经可用。
+    fun markConnected() {
+        connected = true
+    }
+
+    // 标记服务尚未连接或自动化组件已经释放。
+    fun markDisconnected() {
+        connected = false
+    }
+
+    // 返回当前进程中的真实服务连接状态。
+    fun isConnected(): Boolean = connected
 }

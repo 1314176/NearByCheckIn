@@ -34,11 +34,27 @@ class CruiseService : Service() {
             CheckInTransactionRepository
     private var overlayVisible = true
     private var currentNotificationText = DEFAULT_NOTIFICATION_TEXT
+    private var foregroundReady = false
 
     // 创建前台通知并启动定位发现与悬浮窗控制器。
     override fun onCreate() {
         super.onCreate()
-        startForegroundNotification()
+        val container = (application as NearbyCheckInApplication).appContainer
+        transactionRepository = container.transactionRepository
+        foregroundReady = CruiseForegroundStartPolicy.tryStart(
+            start = ::startForegroundNotification,
+            onRejected = { error ->
+                container.checkInCoordinator.stopSession()
+                transactionRepository.clearPendingAutoSplitLaunchRequest()
+                transactionRepository.updateAutomationStatus(
+                    statusText = "巡航启动被系统拒绝，请在主界面检查定位权限后重新启动：${error.message}",
+                    source = "巡航服务",
+                    level = AutomationLogLevel.ERROR
+                )
+                stopSelf()
+            }
+        )
+        if (!foregroundReady) return
 
         overlayController = GlowRadarOverlayController(
             service = this,
@@ -51,9 +67,6 @@ class CruiseService : Service() {
         // 暂时停用“巡航中”悬浮界面，保留控制器代码以便后续恢复。
         // overlayController.restore()
 
-        val container = (application as NearbyCheckInApplication)
-            .appContainer
-        transactionRepository = container.transactionRepository
         discoveryController = CruiseDiscoveryController(
             context = applicationContext,
             providerCoordinator = container.providerAutomationCoordinator,
@@ -71,6 +84,7 @@ class CruiseService : Service() {
         flags: Int,
         startId: Int
     ): Int {
+        if (!foregroundReady) return START_NOT_STICKY
         if (intent?.action == ACTION_TOGGLE_OVERLAY) {
             // 暂时停用“巡航中”悬浮界面的通知切换入口。
             // overlayController.toggle()
@@ -188,5 +202,22 @@ class CruiseService : Service() {
             "正在为您自动监测周边打卡点..."
         const val ACTION_TOGGLE_OVERLAY =
             "com.wu.nearbycheckin.action.TOGGLE_OVERLAY"
+    }
+}
+
+internal object CruiseForegroundStartPolicy {
+
+    // 将权限或后台启动限制转为可恢复的失败，避免定位服务反复崩溃。
+    fun tryStart(start: () -> Unit, onRejected: (RuntimeException) -> Unit): Boolean {
+        try {
+            start()
+        } catch (error: SecurityException) {
+            onRejected(error)
+            return false
+        } catch (error: IllegalStateException) {
+            onRejected(error)
+            return false
+        }
+        return true
     }
 }

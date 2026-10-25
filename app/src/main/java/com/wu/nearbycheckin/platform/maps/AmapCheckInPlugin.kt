@@ -35,11 +35,14 @@ class AmapCheckInPlugin : MapAutomationPlugin {
     private var pendingCommandId = ""
     private var lastObservedCheckInCount: Int? = null
     private var pendingBeforeCheckInCount: Int? = null
+    private var lastObservedCountKind = ""
+    private var pendingCountKind = ""
 
     // 按页面语义识别高德流程且不绑定应用版本号。
     override fun inspect(window: MapWindowSnapshot): PluginPageState {
-        val labels = window.nodes.flatMap(PluginNodeSnapshot::labels)
-        val joined = labels.joinToString("|")
+        val visibleNodes = window.nodes.visibleInCurrentWindow()
+        val labels = visibleNodes.flatMap(PluginNodeSnapshot::labels)
+        val joined = labels.filterNot { it.contains(":id/") }.distinct().joinToString("|")
         val page = when {
             labels.any { value -> BLOCKED_LABELS.any(value::contains) } ->
                 PluginPage.BLOCKED
@@ -69,6 +72,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         }
         labels.extractCheckInCount()?.let { count ->
             lastObservedCheckInCount = count
+            lastObservedCountKind = labels.checkInCountKind()
         }
         return PluginPageState(
             page = page,
@@ -89,7 +93,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
     override fun readCandidates(
         window: MapWindowSnapshot
     ): List<ProviderPlaceCandidate> {
-        val semanticNodes = window.nodes.filter { node ->
+        val semanticNodes = window.nodes.visibleInCurrentWindow().filter { node ->
             node.labels().isNotEmpty()
         }
         val rows = semanticNodes
@@ -100,7 +104,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         if (rows.isNotEmpty()) {
             return rows.distinctBy { candidate -> candidate.toPlaceKey() }
         }
-        val startNode = window.nodes.firstOrNull { node ->
+        val startNode = semanticNodes.firstOrNull { node ->
             node.labels().any(::isStartActionLabel)
         } ?: return emptyList()
         return listOf(
@@ -157,9 +161,10 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         pendingCandidate = candidate
         pendingBeforeFingerprint = candidate.fingerprint
         pendingBeforeCheckInCount = lastObservedCheckInCount
+        pendingCountKind = lastObservedCountKind
         return newCommand(
             type = PluginCommandType.SELECT_CANDIDATE,
-            labels = if (candidate.stableHint == CURRENT_LOCATION_HINT) {
+            labels = if (candidate.isDeviceLocationCandidate()) {
                 START_LABELS
             } else {
                 listOf(candidate.name)
@@ -167,7 +172,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
             evidence = "选择高德候选：${candidate.name}",
             fingerprint = candidate.fingerprint,
             repeatAfterMillis = if (
-                candidate.stableHint == CURRENT_LOCATION_HINT
+                candidate.isDeviceLocationCandidate()
             ) {
                 SECOND_TAP_DELAY_MILLIS
             } else {
@@ -180,14 +185,15 @@ class AmapCheckInPlugin : MapAutomationPlugin {
     override fun verifyResult(
         window: MapWindowSnapshot
     ): MapOperationEvidence {
-        val labels = window.nodes.flatMap(PluginNodeSnapshot::labels)
+        val labels = window.nodes.visibleInCurrentWindow().flatMap(PluginNodeSnapshot::labels)
         val beforeCheckInCount = pendingBeforeCheckInCount
         val afterCheckInCount = labels.extractCheckInCount()
         val state = inspect(window)
         val rateLimited = RATE_LIMIT_LABELS.any(state.evidence::contains)
         val checkInCountIncreased = beforeCheckInCount != null &&
                 afterCheckInCount != null &&
-                afterCheckInCount > beforeCheckInCount
+                afterCheckInCount.toLong() == beforeCheckInCount.toLong() + 1L &&
+                pendingCountKind == labels.checkInCountKind()
         val status = when {
             checkInCountIncreased -> MapOperationStatus.SUCCESS
             state.page == PluginPage.SUCCESS -> MapOperationStatus.SUCCESS
@@ -355,6 +361,35 @@ class AmapCheckInPlugin : MapAutomationPlugin {
                         )
     }
 
+    // 只保留与当前地图窗口有面积交集的节点，排除横向卡片容器中的屏幕外旧页面。
+    private fun List<PluginNodeSnapshot>.visibleInCurrentWindow(): List<PluginNodeSnapshot> {
+        val windowNode = firstOrNull { node ->
+            node.hasPositiveArea() &&
+                    (
+                            node.viewId == ANDROID_CONTENT_VIEW_ID ||
+                                    node.viewId.endsWith(ROOT_VIEW_ID_SUFFIX)
+                            )
+        } ?: return this
+        return filter { node ->
+            node.hasPositiveArea() && node.intersects(windowNode)
+        }
+    }
+
+    // 判断节点是否具有可用于当前窗口判定的正面积边界。
+    private fun PluginNodeSnapshot.hasPositiveArea(): Boolean {
+        return right > left && bottom > top
+    }
+
+    // 使用严格面积交集判断节点是否真正进入当前分屏窗口。
+    private fun PluginNodeSnapshot.intersects(
+        windowNode: PluginNodeSnapshot
+    ): Boolean {
+        return minOf(right, windowNode.right) >
+                maxOf(left, windowNode.left) &&
+                minOf(bottom, windowNode.bottom) >
+                maxOf(top, windowNode.top)
+    }
+
     // 仅把当前地点完成结果识别为终态，避免累计“已点亮数量”遮蔽开始按钮。
     private fun isAlreadyCompletedPage(labels: List<String>): Boolean {
         return labels.any { label ->
@@ -405,6 +440,13 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         return ADDRESS_MARKERS.any(value::contains)
     }
 
+    // 区分地点统计和角落统计，避免页面切换时把两种数量当作同一个基准。
+    private fun List<String>.checkInCountKind(): String {
+        return if (any { LOCATION_COUNT_INLINE_PATTERN.containsMatchIn(it) } ||
+            any { it in listOf("已打卡", "打卡点", "地点") }
+        ) "地点" else "角落"
+    }
+
     // 优先读取高德“地点”累计数量，再兼容旧版已打卡和角落文案。
     private fun List<String>.extractCheckInCount(): Int? {
         firstNotNullOfOrNull { label ->
@@ -444,8 +486,10 @@ class AmapCheckInPlugin : MapAutomationPlugin {
     }
 
     private companion object {
-        const val PROFILE_VERSION = "amap-continuous-v5.2.5"
+        const val PROFILE_VERSION = "amap-continuous-v5.2.8"
         const val CURRENT_LOCATION_HINT = "device-real-location"
+        const val ANDROID_CONTENT_VIEW_ID = "android:id/content"
+        const val ROOT_VIEW_ID_SUFFIX = ":id/root_view"
         const val MAX_EVIDENCE_LENGTH = 1_000
         const val SECOND_TAP_DELAY_MILLIS = 2_000L
         const val ROW_BUCKET_HEIGHT = 120

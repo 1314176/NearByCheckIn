@@ -38,8 +38,9 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
 
     // 按稳定语义识别百度打卡流程页面。
     override fun inspect(window: MapWindowSnapshot): PluginPageState {
-        val labels = window.nodes.flatMap(PluginNodeSnapshot::labels)
-        val joined = labels.joinToString("|")
+        val visibleNodes = window.nodes.visibleInCurrentWindow()
+        val labels = visibleNodes.flatMap(PluginNodeSnapshot::labels)
+        val joined = labels.filterNot { it.contains(":id/") }.distinct().joinToString("|")
         val page = when {
             isDailyQuotaEvidence(joined) ->
                 PluginPage.DAILY_QUOTA_EXHAUSTED
@@ -50,10 +51,15 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
             labels.any { label ->
                 ALBUM_FOOTPRINT_LABELS.any(label::contains)
             } -> PluginPage.RECOVERY
+            labels.any { label -> TEMPLATE_PAGE_LABELS.any(label::contains) } ->
+                PluginPage.RECOVERY
             labels.any { label -> SUCCESS_LABELS.any(label::contains) } ->
                 PluginPage.SUCCESS
-            labels.any { label -> COMPLETED_LABELS.any(label::contains) } &&
-                    labels.any { label -> DISMISS_LABELS.any(label::contains) } ->
+            labels.any { label -> CURRENT_PLACE_COMPLETED_LABELS.any(label::contains) } ||
+                    labels.any { it in COMPLETED_LABELS } &&
+                    labels.any { it == "完成" || it == "关闭" } &&
+                    labels.none(::isCheckInActionLabel) &&
+                    labels.none { label -> CANDIDATE_PAGE_LABELS.any(label::contains) } ->
                 PluginPage.ALREADY_COMPLETED
             labels.any { label -> CANDIDATE_PAGE_LABELS.any(label::contains) } ->
                 PluginPage.CANDIDATE_LIST
@@ -76,6 +82,14 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
             profileVersion = profileVersion,
             fingerprint = window.fingerprint(),
             evidence = joined.take(MAX_EVIDENCE_LENGTH),
+            navigationTarget = when (page) {
+                PluginPage.CHECK_IN_ENTRY -> visibleNodes.firstOrNull { node ->
+                    node.labels().any(::isCheckInActionLabel)
+                }?.toNavigationTarget()
+                PluginPage.FOOTPRINT -> visibleNodes.findCheckInTab()
+                    ?.toNavigationTarget()
+                else -> null
+            },
             blockedReason = when (page) {
                 PluginPage.DAILY_QUOTA_EXHAUSTED ->
                     DAILY_QUOTA_LABELS.firstOrNull(joined::contains)
@@ -92,7 +106,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
     override fun readCandidates(
         window: MapWindowSnapshot
     ): List<ProviderPlaceCandidate> {
-        return window.nodes
+        return window.nodes.visibleInCurrentWindow()
             .filter { node -> node.labels().isNotEmpty() }
             .groupBy { node ->
                 node.parentFingerprint.ifBlank {
@@ -106,6 +120,20 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
 
     // 根据当前页面生成下一条确定性导航命令。
     override fun buildNextAction(state: PluginPageState): PluginCommand? {
+        // 统计卡片已出现代表已在打卡页，向上滚动内容以露出当前位置按钮。
+        if (state.page == PluginPage.FOOTPRINT &&
+            state.evidence.contains(CHECK_IN_SUMMARY_MARKER) &&
+            state.evidence.contains(CHECK_IN_COUNT_UNIT)
+        ) {
+            return newCommand(
+                type = PluginCommandType.SCROLL_CANDIDATES,
+                labels = emptyList(),
+                evidenceHint = "打卡当前位置入口未露出，滚动打卡面板"
+            )
+        }
+        if (state.page == PluginPage.FOOTPRINT && state.navigationTarget == null) {
+            return null
+        }
         val typeAndLabels = when (state.page) {
             PluginPage.HOME ->
                 PluginCommandType.NAVIGATE_MINE to listOf("我的")
@@ -131,7 +159,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
                 PluginCommandType.BLOCK to emptyList()
             PluginPage.UNKNOWN -> return null
         }
-        return newCommand(
+        val command = newCommand(
             type = typeAndLabels.first,
             labels = typeAndLabels.second,
             viewId = when (state.page) {
@@ -140,6 +168,30 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
                 else -> ""
             },
             evidenceHint = state.evidence
+        )
+        return state.navigationTarget?.let { target ->
+            command.copy(target = target)
+        } ?: command
+    }
+
+    // 仅选择与角落或轨迹同排的底部页签，排除新增相机模板入口。
+    private fun List<PluginNodeSnapshot>.findCheckInTab(): PluginNodeSnapshot? {
+        val peers = filter { node -> node.labels().any(TRACK_HOME_LABELS::contains) }
+        return lastOrNull { node ->
+            node.labels().any(BAIDU_CHECK_IN_TAB_LABELS::contains) &&
+                    node.viewId != TOOLBAR_ENTRY_VIEW_ID &&
+                    peers.any { peer ->
+                        minOf(node.bottom, peer.bottom) > maxOf(node.top, peer.top) ||
+                                node.bottom == 0 && peer.bottom == 0
+                    }
+        }
+    }
+
+    // 将识别时的真实节点固定为执行目标，防止同文案入口替换或抢选。
+    private fun PluginNodeSnapshot.toNavigationTarget(): PluginCommandTarget {
+        return PluginCommandTarget(
+            labels = listOf(text, description).filter(String::isNotBlank),
+            nodeFingerprint = fingerprint
         )
     }
 
@@ -164,7 +216,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
     override fun verifyResult(
         window: MapWindowSnapshot
     ): MapOperationEvidence {
-        val labels = window.nodes.flatMap(PluginNodeSnapshot::labels)
+        val labels = window.nodes.visibleInCurrentWindow().flatMap(PluginNodeSnapshot::labels)
         val beforeCheckInCount = pendingBeforeCheckInCount
         val afterCheckInCount = labels.extractCheckInCount()
         val state = inspect(window)
@@ -172,16 +224,11 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         val checkInCountIncreased =
             beforeCheckInCount != null &&
                     afterCheckInCount != null &&
-                    afterCheckInCount > beforeCheckInCount
+                    afterCheckInCount.toLong() == beforeCheckInCount.toLong() + 1L
         val status = when {
             checkInCountIncreased -> MapOperationStatus.SUCCESS
-            state.page == PluginPage.SUCCESS -> when {
-                beforeCheckInCount != null &&
-                        afterCheckInCount != null &&
-                        afterCheckInCount <= beforeCheckInCount ->
-                    MapOperationStatus.ALREADY_COMPLETED
-                else -> MapOperationStatus.UNKNOWN
-            }
+            // 数量可能在关闭弹层后才刷新，未增长不能永久标记此地点已经完成。
+            state.page == PluginPage.SUCCESS -> MapOperationStatus.UNKNOWN
             state.page == PluginPage.ALREADY_COMPLETED ->
                 MapOperationStatus.ALREADY_COMPLETED
             state.page == PluginPage.DAILY_QUOTA_EXHAUSTED ->
@@ -305,6 +352,17 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         )
     }
 
+    // 忽略分屏可见范围外的旧结果和旧入口，避免页面判定与点击目标不一致。
+    private fun List<PluginNodeSnapshot>.visibleInCurrentWindow(): List<PluginNodeSnapshot> {
+        val bounds = firstOrNull {
+            it.viewId == "android:id/content" && it.right > it.left && it.bottom > it.top
+        } ?: return this
+        return filter {
+            minOf(it.right, bounds.right) > maxOf(it.left, bounds.left) &&
+                    minOf(it.bottom, bounds.bottom) > maxOf(it.top, bounds.top)
+        }
+    }
+
     // 判断标签是否为百度真实打卡动作并排除统计与入口文案。
     private fun isCheckInActionLabel(label: String): Boolean {
         return CHECK_IN_ACTION_LABELS.any { action ->
@@ -349,7 +407,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
     }
 
     private companion object {
-        const val PROFILE_VERSION = "baidu-continuous-v5.2.5"
+        const val PROFILE_VERSION = "baidu-continuous-v5.2.8"
         const val MAX_EVIDENCE_LENGTH = 1_000
         const val ROW_BUCKET_HEIGHT = 120
         const val MIN_NAME_LENGTH = 2
@@ -361,10 +419,14 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         const val SHARE_CLOSE_VIEW_ID =
             "com.baidu.BaiduMap:id/iv_close_share"
         const val BACK_VIEW_ID = "com.baidu.BaiduMap:id/btn_back"
+        const val TOOLBAR_ENTRY_VIEW_ID = "com.baidu.BaiduMap:id/tv_entry"
         const val DAILY_QUOTA_MESSAGE = "今天打卡太多地方啦，明天再试"
         val ALBUM_FOOTPRINT_LABELS = listOf(
             "相册足迹",
             "相册足迹读取中"
+        )
+        val TEMPLATE_PAGE_LABELS = listOf(
+            "打卡模版", "打卡模板", "搜索打卡点、地点", "搜索打卡点,地点"
         )
         val CANDIDATE_PAGE_LABELS = listOf(
             "选择打卡地点",
@@ -382,6 +444,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         val FOOTPRINT_LABELS = listOf("足迹", "我的足迹")
         val SUCCESS_LABELS = listOf("打卡成功", "已成功打卡")
         val COMPLETED_LABELS = listOf("已打卡", "已经打卡")
+        val CURRENT_PLACE_COMPLETED_LABELS = listOf("当前地点已打卡", "该地点已打卡", "这里已打卡")
         val DISMISS_LABELS = listOf("完成", "关闭", "返回")
         val CHECK_IN_COUNT_MARKERS = listOf(
             SUCCESS_COUNT_MARKER,

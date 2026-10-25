@@ -92,7 +92,8 @@ data class PluginPageState(
     val profileVersion: String,
     val fingerprint: String,
     val evidence: String,
-    val blockedReason: String = ""
+    val blockedReason: String = "",
+    val navigationTarget: PluginCommandTarget? = null
 )
 
 /**

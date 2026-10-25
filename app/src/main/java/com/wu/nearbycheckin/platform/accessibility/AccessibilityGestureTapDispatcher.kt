@@ -23,16 +23,26 @@ class AccessibilityGestureTapDispatcher(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingTaps = ArrayDeque<TapRequest>()
     private val providerTurnQueue = ProviderGestureTurnQueue()
+    private val navigationLease = ProviderNavigationLease()
     private var isDispatching = false
     private var commandReservedUntilMillis = 0L
+    private val dispatchLifecycle = GestureDispatchLifecycle()
+    private var activeTap: TapRequest? = null
+
+    // 没有可执行任务或 Worker 停止时撤销等待权，避免空队列阻塞另一地图。
+    fun cancelWaiting(provider: MapProvider) {
+        providerTurnQueue.cancel(provider)
+    }
 
     // 判断共享命令闸门当前是否允许领取新的 UI 任务。
     fun canExecuteCommand(provider: MapProvider): Boolean {
         val nowMillis = SystemClock.elapsedRealtime()
         return providerTurnQueue.canAcquire(
             provider = provider,
-            busy = isDispatching || nowMillis < commandReservedUntilMillis,
-            nowMillis = nowMillis
+            busy = isDispatching || nowMillis < commandReservedUntilMillis ||
+                    navigationLease.isBlocked(provider, nowMillis),
+            nowMillis = nowMillis,
+            consume = false
         )
     }
 
@@ -46,7 +56,8 @@ class AccessibilityGestureTapDispatcher(
             !providerTurnQueue.canAcquire(
                 provider = provider,
                 busy = isDispatching ||
-                        nowMillis < commandReservedUntilMillis,
+                        nowMillis < commandReservedUntilMillis ||
+                        navigationLease.isBlocked(provider, nowMillis),
                 nowMillis = nowMillis
             )
         ) {
@@ -54,6 +65,19 @@ class AccessibilityGestureTapDispatcher(
         }
         commandReservedUntilMillis = nowMillis + COMMAND_SETTLE_MILLIS
         return block()
+    }
+
+    // 页面跳转确认期间保留当前地图执行权，避免另一地图插入点击。
+    fun reserveNavigation(provider: MapProvider, durationMillis: Long) {
+        navigationLease.reserve(
+            provider,
+            SystemClock.elapsedRealtime() + durationMillis
+        )
+    }
+
+    // 页面已确认变化或等待结束时只释放所属地图的跳转执行权。
+    fun releaseNavigation(provider: MapProvider) {
+        navigationLease.release(provider)
     }
 
     // 将短时点击加入共享队列并确保同一时刻只派发一个手势。
@@ -67,7 +91,7 @@ class AccessibilityGestureTapDispatcher(
         )
     }
 
-    // 为目标应用原子提交聚焦与点击，避免另一地图在队列间隙抢走焦点。
+    // 为目标应用串行提交目标点击，不额外触碰窗口顶部的系统控件。
     fun tapForPackage(
         x: Int,
         y: Int,
@@ -99,7 +123,7 @@ class AccessibilityGestureTapDispatcher(
         )
     }
 
-    // 依据目标窗口生成安全聚焦点并提交不可插队的应用手势请求。
+    // 校验目标窗口边界并提交不可插队的应用手势请求。
     private fun enqueuePackageTap(
         x: Int,
         y: Int,
@@ -107,7 +131,9 @@ class AccessibilityGestureTapDispatcher(
         secondTapDelayMillis: Long = 0L,
         onCompleted: ((Boolean) -> Unit)? = null
     ): Boolean {
-        val focusPoint = findPackageWindowBounds(packageName)?.let { bounds ->
+        val bounds = findPackageWindowBounds(packageName) ?: return false
+        if (!bounds.contains(x, y)) return false
+        val focusPoint = bounds.let { bounds ->
             PackageGestureFocusPolicy.select(
                 left = bounds.left,
                 top = bounds.top,
@@ -120,6 +146,7 @@ class AccessibilityGestureTapDispatcher(
                 x = x,
                 y = y,
                 durationMillis = PACKAGE_TAP_DURATION_MILLIS,
+                packageName = packageName,
                 focusPoint = focusPoint,
                 secondTapStartMillis =
                     PackageGestureTimingPolicy.secondTapStartMillis(
@@ -140,11 +167,18 @@ class AccessibilityGestureTapDispatcher(
         return dispatchNext()
     }
 
-    // 清空尚未派发的手势并等待系统结束当前手势。
+    // 清空队列并使当前回调失效，避免服务重连后旧手势释放新实例的执行权。
     fun clear() {
         mainHandler.removeCallbacksAndMessages(null)
+        dispatchLifecycle.invalidate()
+        val cancelled = activeTap
+        activeTap = null
+        isDispatching = false
+        commandReservedUntilMillis = 0L
         pendingTaps.clear()
         providerTurnQueue.clear()
+        navigationLease.clear()
+        cancelled?.onCompleted?.invoke(false)
     }
 
     // 派发队首点击并在系统回调后继续处理下一条。
@@ -154,6 +188,14 @@ class AccessibilityGestureTapDispatcher(
             return false
         }
         val tap = pendingTaps.removeFirst()
+        if (tap.packageName.isNotBlank() &&
+            findPackageWindowBounds(tap.packageName)?.contains(tap.x, tap.y) != true
+        ) {
+            tap.onCompleted?.invoke(false)
+            isDispatching = false
+            dispatchNext()
+            return false
+        }
         val isFocusPrimer = !tap.focusPrimed && tap.focusPoint != null
         if (isFocusPrimer) {
             pendingTaps.addFirst(tap.copy(focusPrimed = true))
@@ -188,6 +230,19 @@ class AccessibilityGestureTapDispatcher(
         }
         val gesture = gestureBuilder.build()
         isDispatching = true
+        activeTap = tap
+        val token = dispatchLifecycle.begin()
+        val watchdog = Runnable {
+            if (dispatchLifecycle.finish(token)) {
+                if (isFocusPrimer) pendingTaps.removeFirstOrNull()
+                activeTap = null
+                isDispatching = false
+                tap.onCompleted?.invoke(false)
+                dispatchNext()
+            }
+        }
+        mainHandler.postDelayed(watchdog,
+            tap.secondTapStartMillis + tap.durationMillis + GESTURE_CALLBACK_TIMEOUT_MILLIS)
         val accepted = service.dispatchGesture(
             gesture,
             object : AccessibilityService.GestureResultCallback() {
@@ -196,6 +251,9 @@ class AccessibilityGestureTapDispatcher(
                 override fun onCompleted(
                     gestureDescription: GestureDescription?
                 ) {
+                    if (!dispatchLifecycle.finish(token)) return
+                    mainHandler.removeCallbacks(watchdog)
+                    activeTap = null
                     if (!isFocusPrimer) {
                         tap.onCompleted?.invoke(true)
                     }
@@ -206,9 +264,11 @@ class AccessibilityGestureTapDispatcher(
                 override fun onCancelled(
                     gestureDescription: GestureDescription?
                 ) {
-                    if (!isFocusPrimer) {
-                        tap.onCompleted?.invoke(false)
-                    }
+                    if (!dispatchLifecycle.finish(token)) return
+                    mainHandler.removeCallbacks(watchdog)
+                    if (isFocusPrimer) pendingTaps.removeFirstOrNull()
+                    activeTap = null
+                    tap.onCompleted?.invoke(false)
                     isDispatching = false
                     dispatchNext()
                 }
@@ -216,11 +276,14 @@ class AccessibilityGestureTapDispatcher(
             null
         )
         if (!accepted) {
-            if (!isFocusPrimer) {
+            if (dispatchLifecycle.finish(token)) {
+                mainHandler.removeCallbacks(watchdog)
+                if (isFocusPrimer) pendingTaps.removeFirstOrNull()
+                activeTap = null
                 tap.onCompleted?.invoke(false)
+                isDispatching = false
+                dispatchNext()
             }
-            isDispatching = false
-            dispatchNext()
         }
         return accepted
     }
@@ -243,7 +306,7 @@ class AccessibilityGestureTapDispatcher(
         )
     }
 
-    // 查找目标应用窗口边界，为无副作用聚焦点提供运行时依据。
+    // 使用系统窗口与根节点的交集校验目标，避免分屏重排后使用旧边界。
     private fun findPackageWindowBounds(packageName: String): Rect? {
         service.windows.orEmpty().forEach { window ->
             val rootNode = window.root ?: return@forEach
@@ -251,7 +314,10 @@ class AccessibilityGestureTapDispatcher(
                 return@forEach
             }
             val bounds = Rect().also(rootNode::getBoundsInScreen)
-            if (bounds.width() > 0 && bounds.height() > 0) {
+            val windowBounds = Rect().also(window::getBoundsInScreen)
+            if (bounds.intersect(windowBounds) &&
+                bounds.width() > 0 && bounds.height() > 0
+            ) {
                 return bounds
             }
         }
@@ -262,6 +328,7 @@ class AccessibilityGestureTapDispatcher(
         val x: Int,
         val y: Int,
         val durationMillis: Long,
+        val packageName: String = "",
         val focusPoint: GestureTapPoint? = null,
         val secondTapStartMillis: Long = 0L,
         val focusPrimed: Boolean = false,
@@ -273,6 +340,27 @@ class AccessibilityGestureTapDispatcher(
         const val PACKAGE_TAP_DURATION_MILLIS = 80L
         const val PACKAGE_FOCUS_SETTLE_DELAY_MILLIS = 80L
         const val COMMAND_SETTLE_MILLIS = 350L
+        const val GESTURE_CALLBACK_TIMEOUT_MILLIS = 5_000L
+    }
+}
+
+internal class GestureDispatchLifecycle {
+    private var sequence = 0L
+    private var active: Long? = null
+
+    // 为每次真实派发生成唯一代次。
+    fun begin(): Long = (++sequence).also { active = it }
+
+    // 完成、取消、超时只能有一个生效，旧回调不得释放新手势的锁。
+    fun finish(token: Long): Boolean {
+        if (active != token) return false
+        active = null
+        return true
+    }
+
+    // 服务结束时使系统随后送达的旧回调失效。
+    fun invalidate() {
+        active = null
     }
 }
 
@@ -286,11 +374,17 @@ internal class ProviderGestureTurnQueue(
         waitingProviders.clear()
     }
 
+    // 撤回不再需要实际命令的地图等待票据。
+    fun cancel(provider: MapProvider) {
+        waitingProviders.remove(provider)
+    }
+
     // 按首次等待顺序发放共享手势执行权并清理已经停止轮询的旧请求。
     fun canAcquire(
         provider: MapProvider,
         busy: Boolean,
-        nowMillis: Long
+        nowMillis: Long,
+        consume: Boolean = true
     ): Boolean {
         removeStaleWaiters(nowMillis)
         if (busy) {
@@ -302,7 +396,9 @@ internal class ProviderGestureTurnQueue(
             waitingProviders[provider] = nowMillis
             return false
         }
-        waitingProviders.remove(provider)
+        if (consume) {
+            waitingProviders.remove(provider)
+        }
         return true
     }
 
@@ -340,28 +436,42 @@ internal data class GestureTapPoint(
 
 internal object PackageGestureFocusPolicy {
 
-    // 在目标窗口顶部中央选择不与流程按钮重叠的安全聚焦点。
+    // 保留旧接口但禁用额外聚焦点击，窗口顶部可能是系统分屏操作条。
+    @Suppress("UNUSED_PARAMETER")
     fun select(
         left: Int,
         top: Int,
         right: Int,
         bottom: Int
     ): GestureTapPoint? {
-        val width = right - left
-        val height = bottom - top
-        if (width <= 0 || height <= 0) {
-            return null
-        }
-        val topOffset = (height * FOCUS_Y_PERCENT / 100)
-            .coerceIn(MIN_FOCUS_Y_OFFSET, MAX_FOCUS_Y_OFFSET)
-            .coerceAtMost(height - 1)
-        return GestureTapPoint(
-            x = left + width / 2,
-            y = top + topOffset
-        )
+        return null
+    }
+}
+
+internal class ProviderNavigationLease {
+
+    private var owner: MapProvider? = null
+    private var deadlineMillis = 0L
+
+    // 为一个已提交的跳转建立有期限的独占执行权。
+    fun reserve(provider: MapProvider, untilMillis: Long) {
+        owner = provider
+        deadlineMillis = untilMillis
     }
 
-    private const val FOCUS_Y_PERCENT = 5
-    private const val MIN_FOCUS_Y_OFFSET = 24
-    private const val MAX_FOCUS_Y_OFFSET = 64
+    // 仅在跳转尚未到期时阻止其他地图，不阻断当前地图的结果读取。
+    fun isBlocked(provider: MapProvider, nowMillis: Long): Boolean {
+        return owner != null && owner != provider && nowMillis < deadlineMillis
+    }
+
+    // 只释放自己的执行权，迟到的旧地图回调不得释放另一地图的新跳转。
+    fun release(provider: MapProvider) {
+        if (owner == provider) clear()
+    }
+
+    // 服务停止或重连时清除旧跳转执行权。
+    fun clear() {
+        owner = null
+        deadlineMillis = 0L
+    }
 }

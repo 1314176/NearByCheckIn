@@ -8,6 +8,7 @@ package com.wu.nearbycheckin.data.repository
 
 
 import java.io.File
+import java.util.UUID
 
 import android.content.Context
 import android.util.Log
@@ -48,6 +49,11 @@ class SharedPreferencesCheckInTransactionRepository(
         PREFERENCES_NAME,
         Context.MODE_PRIVATE
     )
+    private val runtimePreferences = applicationContext.getSharedPreferences(
+        "check_in_runtime_checkpoint_v1", Context.MODE_PRIVATE
+    )
+    private var persistedSnapshot: AutomationSnapshot? = null
+    private var persistedRevision = ""
     private val mutableSnapshot = MutableStateFlow(
         loadOrMigrateSnapshot()
     )
@@ -427,7 +433,16 @@ class SharedPreferencesCheckInTransactionRepository(
         )
         if (!storedJson.isNullOrBlank()) {
             AutomationSnapshotJsonCodec.decode(storedJson)?.let {
-                return it
+                persistedRevision = preferences.getString(REVISION_KEY, "").orEmpty()
+                val restored = AutomationRuntimeCheckpointPolicy.restore(
+                    durable = it,
+                    runtime = runtimePreferences.getString(SNAPSHOT_JSON_KEY, null)
+                        ?.let(AutomationSnapshotJsonCodec::decode),
+                    durableRevision = persistedRevision,
+                    runtimeRevision = runtimePreferences.getString(REVISION_KEY, "").orEmpty()
+                )
+                persistedSnapshot = restored
+                return restored
             }
         }
 
@@ -436,9 +451,25 @@ class SharedPreferencesCheckInTransactionRepository(
         return migrated
     }
 
-    // 同步提交完整 JSON，失败时阻止内存状态前移。
+    // 运行态同步写小检查点；任务变更同步提交完整快照并更换代次，失败不前移内存。
     private fun persistSnapshot(snapshot: AutomationSnapshot) {
+        val previous = persistedSnapshot
+        if (previous == snapshot) return
+        if (previous != null && persistedRevision.isNotBlank() &&
+            AutomationRuntimeCheckpointPolicy.canCheckpoint(previous, snapshot)
+        ) {
+            val committed = runtimePreferences.edit()
+                .putString(REVISION_KEY, persistedRevision)
+                .putString(SNAPSHOT_JSON_KEY, AutomationSnapshotJsonCodec.encode(
+                    AutomationRuntimeCheckpointPolicy.extract(snapshot)
+                )).commit()
+            check(committed) { "自动化运行态检查点持久化失败" }
+            persistedSnapshot = snapshot
+            return
+        }
+        val revision = UUID.randomUUID().toString()
         val committed = preferences.edit()
+            .putString(REVISION_KEY, revision)
             .putInt(
                 SCHEMA_VERSION_KEY,
                 AutomationSnapshot.CURRENT_SCHEMA_VERSION
@@ -451,6 +482,8 @@ class SharedPreferencesCheckInTransactionRepository(
         if (!committed) {
             throw IllegalStateException("自动化快照持久化失败")
         }
+        persistedRevision = revision
+        persistedSnapshot = snapshot
     }
 
     // 将本次新增的 UI 日志同步追加到不覆盖历史的完整日志文件。
@@ -509,6 +542,7 @@ class SharedPreferencesCheckInTransactionRepository(
         const val RUNTIME_LOG_DIRECTORY_NAME = "automation_logs"
         const val SCHEMA_VERSION_KEY = "schema_version"
         const val SNAPSHOT_JSON_KEY = "automation_snapshot_json"
+        const val REVISION_KEY = "snapshot_revision"
         const val DEFAULT_LOG_SOURCE = "自动化"
         const val SPLIT_LOG_SOURCE = "分屏启动"
         const val MAX_RUNTIME_LOG_COUNT = 300

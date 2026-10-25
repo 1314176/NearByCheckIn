@@ -11,7 +11,6 @@ import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Configuration
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -79,13 +78,6 @@ class MainActivity : ComponentActivity() {
                     Toast.LENGTH_LONG
                 ).show()
             }
-        }
-
-    private val notificationPermissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) {
-            viewModel.onEvent(MainUiEvent.RetryStartCruise)
         }
 
     private val overlayPermissionLauncher =
@@ -202,13 +194,6 @@ class MainActivity : ComponentActivity() {
         when (effect) {
             MainUiEffect.RequestLocationPermission ->
                 requestLocationPermission()
-            MainUiEffect.RequestNotificationPermission -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    notificationPermissionLauncher.launch(
-                        Manifest.permission.POST_NOTIFICATIONS
-                    )
-                }
-            }
             MainUiEffect.RequestOverlayPermission ->
                 openOverlayPermissionSettings()
             MainUiEffect.OpenAccessibilitySettings ->

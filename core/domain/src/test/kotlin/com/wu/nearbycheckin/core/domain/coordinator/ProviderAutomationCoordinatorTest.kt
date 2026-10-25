@@ -31,6 +31,149 @@ import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 
 class ProviderAutomationCoordinatorTest {
 
+    // 暂时失败耗尽三次后冷却恢复，不能要求用户升级插件才能再次尝试。
+    @Test
+    fun transientFailureResumesAfterBoundedCooldown() {
+        val fixture = fixture()
+        val candidate = candidate("服务区地点", false)
+        fixture.coordinator.replaceCandidates(MapProvider.BAIDU, listOf(candidate), "list", "v1")
+        fixture.repository.updateSnapshot { state -> state.copy(providerTasks = state.providerTasks.map {
+            it.copy(status = ProviderTaskStatus.FAILED, attempts = 3, updatedAtMillis = fixture.clock.value,
+                evidence = evidence(it.taskId, MapOperationStatus.TIMEOUT).copy(profileVersion = "v1"))
+        }) }
+        fixture.clock.value += 59_999
+        fixture.coordinator.replaceCandidates(MapProvider.BAIDU, listOf(candidate), "list", "v1")
+        assertEquals(null, fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker"))
+        fixture.clock.value += 1
+        fixture.coordinator.replaceCandidates(MapProvider.BAIDU, listOf(candidate), "list", "v1")
+        val retried = requireNotNull(fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker"))
+        assertEquals(1, retried.attempts)
+        assertTrue(fixture.repository.currentSnapshot().providerCompletedKeys.isEmpty())
+    }
+
+    // 回放高速、服务区静止、再次驶出，百度持续成功时高德超时不得阻塞其队列。
+    @Test
+    fun highwayStopAndDepartureKeepProviderQueuesIndependent() {
+        val fixture = fixture()
+        val speeds = listOf(120F, 150F, 0F, 0F, 22F, 120F)
+        speeds.forEachIndexed { index, speed ->
+            fixture.clock.value += 60_000L
+            val moving = ProviderMovementPolicy().classify(speed, null, null)
+            fixture.coordinator.updateLocation(com.wu.nearbycheckin.core.model.LocationSnapshot(
+                30.0 + index * 0.01, 121.0, 3.8F, speed, fixture.clock.value, moving
+            ))
+            val amap = candidate("当前高德打卡位置", false, MapProvider.AMAP)
+                .copy(stableHint = "device-real-location:30.$index,121.0")
+            fixture.coordinator.replaceCandidates(MapProvider.AMAP, listOf(amap), "amap-$index")
+            assertTrue(fixture.repository.currentSnapshot().providerTasks.none {
+                it.provider == MapProvider.AMAP && it.candidateKey != amap.toPlaceKey() &&
+                        it.status == ProviderTaskStatus.RETRY_WAIT
+            })
+            val lastAmap = requireNotNull(fixture.coordinator.claimNextTask(MapProvider.AMAP, "amap"))
+            fixture.coordinator.beginVerification(lastAmap.taskId, "command-1")
+            fixture.coordinator.replaceCandidates(MapProvider.BAIDU,
+                listOf(candidate("沿途地点$index", false)), "baidu-$index")
+            val baidu = requireNotNull(fixture.coordinator.claimNextTask(MapProvider.BAIDU, "baidu"))
+            fixture.coordinator.beginVerification(baidu.taskId, "command-1")
+            assertTrue(fixture.coordinator.finishTask(baidu.taskId,
+                evidence(baidu.taskId, MapOperationStatus.SUCCESS)))
+            assertEquals(ProviderTaskStatus.VERIFYING,
+                fixture.repository.currentSnapshot().providerTasks.first { it.taskId == lastAmap.taskId }.status)
+            assertTrue(fixture.coordinator.finishTask(lastAmap.taskId,
+                evidence(lastAmap.taskId, if (speed == 0F) MapOperationStatus.SUCCESS
+                    else MapOperationStatus.TIMEOUT, MapProvider.AMAP)))
+        }
+        assertEquals(6, fixture.repository.currentSnapshot().providerRuntime.baiduTotalVerifiedSuccessCount)
+        assertEquals(2, fixture.repository.currentSnapshot().records.count { it.provider == MapProvider.AMAP })
+    }
+
+    // 同一地图验证中不得再领取另一个地点，防止不同命令争抢同一个结果页。
+    @Test
+    fun onlyOneInFlightTaskPerProvider() {
+        val fixture = fixture()
+        fixture.coordinator.replaceCandidates(MapProvider.BAIDU,
+            listOf(candidate("第一地点", false), candidate("第二地点", false)), "list")
+        val task = requireNotNull(fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker-1"))
+        assertEquals(null, fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker-2"))
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
+        assertEquals(null, fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker-2"))
+        fixture.coordinator.finishTask(task.taskId, evidence(task.taskId, MapOperationStatus.SUCCESS))
+        assertEquals("第二地点", fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker-2")?.candidate?.name)
+    }
+
+    // 相同最终证据回调两次只能增加一次成功计数，迟到超时不能复活已完成任务。
+    @Test
+    fun ignoresDuplicateAndLateFinalEvidence() {
+        val fixture = fixture()
+        fixture.coordinator.replaceCandidates(MapProvider.BAIDU,
+            listOf(candidate("服务区", false)), "list")
+        val task = requireNotNull(fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker"))
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
+        val success = evidence(task.taskId, MapOperationStatus.SUCCESS)
+        assertTrue(fixture.coordinator.finishTask(task.taskId, success))
+        assertFalse(fixture.coordinator.finishTask(task.taskId, success))
+        assertFalse(fixture.coordinator.finishTask(task.taskId,
+            success.copy(resultStatus = MapOperationStatus.TIMEOUT)))
+        val snapshot = fixture.repository.currentSnapshot()
+        assertEquals(1, snapshot.providerRuntime.baiduTotalVerifiedSuccessCount)
+        assertEquals(ProviderTaskStatus.COMPLETED, snapshot.providerTasks.single().status)
+    }
+
+    // 另一地图或旧命令的迟到结果不能完成当前事务。
+    @Test
+    fun rejectsEvidenceFromAnotherProviderOrCommand() {
+        val fixture = fixture()
+        fixture.coordinator.replaceCandidates(MapProvider.BAIDU,
+            listOf(candidate("服务区", false)), "list")
+        val task = requireNotNull(fixture.coordinator.claimNextTask(MapProvider.BAIDU, "worker"))
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
+        assertFalse(fixture.coordinator.finishTask(task.taskId,
+            evidence(task.taskId, MapOperationStatus.SUCCESS, MapProvider.AMAP)))
+        assertFalse(fixture.coordinator.finishTask(task.taskId,
+            evidence(task.taskId, MapOperationStatus.SUCCESS).copy(commandId = "old")))
+        assertEquals(ProviderTaskStatus.VERIFYING,
+            fixture.repository.currentSnapshot().providerTasks.single().status)
+    }
+
+    // 验证移动后的旧位置等待任务被取消，后续只领取当前位置任务。
+    @Test
+    fun retiresObsoleteDeviceLocationTasks() {
+        val fixture = fixture()
+        val first = candidate("当前高德打卡位置", false, MapProvider.AMAP)
+            .copy(stableHint = "device-real-location:31.20000,121.40000")
+        val next = first.copy(stableHint = "device-real-location:31.20100,121.40100")
+        fixture.coordinator.replaceCandidates(MapProvider.AMAP, listOf(first), "first")
+        fixture.coordinator.replaceCandidates(MapProvider.AMAP, listOf(next), "next")
+        val tasks = fixture.repository.currentSnapshot().providerTasks
+        assertEquals(ProviderTaskStatus.CANCELLED, tasks.first().status)
+        assertEquals(ProviderTaskStatus.QUEUED, tasks.last().status)
+        assertEquals(next.toPlaceKey(), fixture.coordinator.claimNextTask(
+            MapProvider.AMAP, "worker"
+        )?.candidateKey)
+    }
+
+    // 验证刷新位置不打断正在验证的任务，也不取消已经确认成功的地点。
+    @Test
+    fun preservesVerifyingAndCompletedDeviceLocationTasks() {
+        val fixture = fixture()
+        val first = candidate("当前高德打卡位置", false, MapProvider.AMAP)
+            .copy(stableHint = "device-real-location:31.20000,121.40000")
+        val next = first.copy(stableHint = "device-real-location:31.20100,121.40100")
+        fixture.coordinator.replaceCandidates(MapProvider.AMAP, listOf(first), "first")
+        val task = fixture.coordinator.claimNextTask(MapProvider.AMAP, "worker")!!
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
+        fixture.coordinator.replaceCandidates(MapProvider.AMAP, listOf(next), "next")
+        assertEquals(ProviderTaskStatus.VERIFYING,
+            fixture.repository.currentSnapshot().providerTasks.first().status)
+        fixture.coordinator.finishTask(task.taskId,
+            evidence(task.taskId, MapOperationStatus.SUCCESS, MapProvider.AMAP))
+        fixture.coordinator.replaceCandidates(MapProvider.AMAP, listOf(next), "next")
+        val snapshot = fixture.repository.currentSnapshot()
+        assertEquals(ProviderTaskStatus.COMPLETED, snapshot.providerTasks.first().status)
+        assertTrue(first.toPlaceKey() in snapshot.providerCompletedKeys)
+        assertEquals(1, snapshot.records.size)
+    }
+
     @Test
     fun `百度列表读取会导入已完成并只入队未完成候选`() {
         val fixture = fixture()
@@ -126,7 +269,7 @@ class ProviderAutomationCoordinatorTest {
             MapProvider.AMAP,
             "amap-worker"
         )!!
-        fixture.coordinator.beginVerification(task.taskId, "amap-command")
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
         fixture.coordinator.finishTask(
             task.taskId,
             evidence(
@@ -179,7 +322,7 @@ class ProviderAutomationCoordinatorTest {
             MapProvider.AMAP,
             "amap-worker"
         )!!
-        fixture.coordinator.beginVerification(task.taskId, "amap-command")
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
         fixture.coordinator.finishTask(
             task.taskId,
             evidence(
@@ -236,7 +379,7 @@ class ProviderAutomationCoordinatorTest {
             MapProvider.BAIDU,
             "worker"
         )!!
-        fixture.coordinator.beginVerification(task.taskId, "command-quota")
+        fixture.coordinator.beginVerification(task.taskId, "command-1")
         val evidence = evidence(
             taskId = task.taskId,
             status = MapOperationStatus.BLOCKED

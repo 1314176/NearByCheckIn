@@ -8,14 +8,11 @@ package com.wu.nearbycheckin.platform.cruise
 
 
 import android.Manifest
-import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
@@ -23,6 +20,7 @@ import androidx.core.content.edit
 import com.wu.nearbycheckin.core.domain.gateway.CruisePlatformGateway
 import com.wu.nearbycheckin.core.domain.gateway.CruisePrecheck
 import com.wu.nearbycheckin.core.domain.repository.CheckInTransactionRepository
+import com.wu.nearbycheckin.platform.accessibility.AccessibilityServiceConnectionState
 import com.wu.nearbycheckin.platform.accessibility.DualMapAccessibilityService
 
 
@@ -130,39 +128,26 @@ class AndroidCruisePlatformGateway(
         }
     }
 
-    // 判断项目无障碍平台适配器是否已由用户启用。
+    // 通过安全设置和真实连接状态共同确认无障碍平台适配器可用。
     private fun isAccessibilityServiceEnabled(): Boolean {
-        val targetComponent = ComponentName(
-            applicationContext,
-            DualMapAccessibilityService::class.java
-        )
-        val accessibilityManager =
-            applicationContext.getSystemService(
-                Context.ACCESSIBILITY_SERVICE
-            ) as AccessibilityManager
-        val enabledByManager = accessibilityManager
-            .getEnabledAccessibilityServiceList(
-                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
-            )
-            .any { serviceInfo ->
-                val resolvedService = serviceInfo.resolveInfo.serviceInfo
-                ComponentName(
-                    resolvedService.packageName,
-                    resolvedService.name
-                ) == targetComponent
-            }
-        if (enabledByManager) {
-            return true
-        }
-
+        val accessibilityEnabled = Settings.Secure.getInt(
+            applicationContext.contentResolver,
+            Settings.Secure.ACCESSIBILITY_ENABLED,
+            0
+        ) == 1
         val enabledServices = Settings.Secure.getString(
             applicationContext.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
-        return enabledServices.split(':').any { flattenedComponent ->
-            ComponentName.unflattenFromString(flattenedComponent) ==
-                    targetComponent
-        }
+        val serviceConfigured = AccessibilityServiceSettingPolicy
+            .containsComponent(
+                enabledServices = enabledServices,
+                packageName = applicationContext.packageName,
+                className = DualMapAccessibilityService::class.java.name
+            )
+        return accessibilityEnabled &&
+                serviceConfigured &&
+                AccessibilityServiceConnectionState.isConnected()
     }
 
     private companion object {
@@ -171,5 +156,40 @@ class AndroidCruisePlatformGateway(
             "baidu_map_privacy_consent"
         const val BAIDU_MAP_PACKAGE_NAME = "com.baidu.BaiduMap"
         const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
+    }
+}
+
+/**
+ * 纯字符串解析系统无障碍服务列表，避免调用可能长期阻塞的 AccessibilityManager Binder。
+ */
+internal object AccessibilityServiceSettingPolicy {
+
+    // 判断冒号分隔的系统配置是否包含目标服务并兼容缩写类名。
+    fun containsComponent(
+        enabledServices: String,
+        packageName: String,
+        className: String
+    ): Boolean {
+        return enabledServices.split(':').any { flattenedComponent ->
+            val separatorIndex = flattenedComponent.indexOf('/')
+            if (separatorIndex <= 0) {
+                return@any false
+            }
+            val configuredPackage = flattenedComponent
+                .substring(0, separatorIndex)
+                .trim()
+            val configuredClass = flattenedComponent
+                .substring(separatorIndex + 1)
+                .trim()
+                .let { rawClassName ->
+                    if (rawClassName.startsWith('.')) {
+                        configuredPackage + rawClassName
+                    } else {
+                        rawClassName
+                    }
+                }
+            configuredPackage == packageName &&
+                    configuredClass == className
+        }
     }
 }

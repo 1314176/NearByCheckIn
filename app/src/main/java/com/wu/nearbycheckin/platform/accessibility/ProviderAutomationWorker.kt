@@ -7,6 +7,8 @@
 package com.wu.nearbycheckin.platform.accessibility
 
 
+import java.util.Locale
+
 import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
@@ -14,6 +16,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 
 import com.wu.nearbycheckin.core.domain.coordinator.ProviderAutomationCoordinator
+import com.wu.nearbycheckin.core.domain.coordinator.ProviderCandidateListFreshnessPolicy
 import com.wu.nearbycheckin.core.domain.coordinator.ProviderLocationFreshnessPolicy
 import com.wu.nearbycheckin.core.domain.coordinator.ProviderSelectionRateLimiter
 import com.wu.nearbycheckin.core.domain.plugin.MapAutomationPluginRegistry
@@ -22,6 +25,7 @@ import com.wu.nearbycheckin.core.domain.plugin.PluginCommandType
 import com.wu.nearbycheckin.core.domain.plugin.PluginPage
 import com.wu.nearbycheckin.core.domain.plugin.PluginPageState
 import com.wu.nearbycheckin.core.model.AutomationSessionStatus
+import com.wu.nearbycheckin.core.model.LocationSnapshot
 import com.wu.nearbycheckin.core.model.MapOperationEvidence
 import com.wu.nearbycheckin.core.model.MapOperationStatus
 import com.wu.nearbycheckin.core.model.MapProvider
@@ -48,6 +52,9 @@ class ProviderAutomationWorker(
     private val commandExecutor = PluginCommandExecutor(gestureDispatcher)
     private val locationFreshnessPolicy = ProviderLocationFreshnessPolicy()
     private val selectionRateLimiter = ProviderSelectionRateLimiter()
+    private val listFreshnessPolicy = ProviderCandidateListFreshnessPolicy()
+    private var listOrigin: LocationSnapshot? = null
+    private var listOpenedAtMillis = 0L
     private var running = false
     private var commandExecuting = false
     private var verificationDeadlineMillis = 0L
@@ -59,7 +66,10 @@ class ProviderAutomationWorker(
     private var amapTransientRateLimitAtMillis = 0L
     private var pendingNavigationSourcePage: PluginPage? = null
     private var pendingNavigationCommandType: PluginCommandType? = null
+    private var pendingNavigationEvidence = ""
+    private val navigationRetryPolicy = NavigationRetryPolicy()
     private var navigationDeadlineMillis = 0L
+    private var navigationGestureFallback = false
     private var lastReportedStatus = ""
     private var lastReportedAtMillis = 0L
 
@@ -108,7 +118,13 @@ class ProviderAutomationWorker(
     fun stop() {
         running = false
         commandExecuting = false
+        gestureDispatcher.cancelWaiting(provider)
+        clearAmapFollowUpState()
+        verificationDeadlineMillis = 0L
+        listOrigin = null
+        listOpenedAtMillis = 0L
         clearPendingNavigation()
+        navigationRetryPolicy.reset()
         mainHandler.removeCallbacks(tickRunnable)
     }
 
@@ -132,11 +148,13 @@ class ProviderAutomationWorker(
         }
         val initialSnapshot = repository.currentSnapshot()
         if (initialSnapshot.session?.status != AutomationSessionStatus.RUNNING) {
+            gestureDispatcher.cancelWaiting(provider)
             return
         }
         val plugin = registry.resolve(provider) ?: return
         val packageName = provider.packageName()
         val rootNode = findRootNode(packageName) ?: run {
+            gestureDispatcher.cancelWaiting(provider)
             reportStatus("${provider.displayName()}窗口暂不可见，后台任务保持等待")
             return
         }
@@ -148,13 +166,21 @@ class ProviderAutomationWorker(
             profileVersion = plugin.profileVersion
         )
         val pageState = plugin.inspect(window)
+        if (pageState.page != PluginPage.CANDIDATE_LIST) {
+            listOpenedAtMillis = 0L
+            listOrigin = null
+        } else if (listOpenedAtMillis == 0L) {
+            listOpenedAtMillis = System.currentTimeMillis()
+            listOrigin = initialSnapshot.providerRuntime.latestLocation
+            visitedListFingerprints.clear()
+        }
         coordinator.updatePluginDiagnostics(
             provider = provider,
             page = pageState.page.name,
             action = "INSPECT",
             evidence = pageState.evidence
         )
-        if (waitForNavigationSettlement(pageState.page)) {
+        if (waitForNavigationSettlement(pageState)) {
             return
         }
         val visibleCandidates = if (
@@ -164,9 +190,6 @@ class ProviderAutomationWorker(
             plugin.readCandidates(window)
         } else {
             emptyList()
-        }
-        if (pageState.page == PluginPage.CANDIDATE_LIST) {
-            discardAmapEntryPlaceholders(visibleCandidates)
         }
         val snapshot = repository.currentSnapshot()
         val activeTask = snapshot.providerTasks.firstOrNull { task ->
@@ -180,6 +203,28 @@ class ProviderAutomationWorker(
         if (activeTask?.status == ProviderTaskStatus.VERIFYING) {
             verifyActiveTask(activeTask, plugin.verifyResult(window), rootNode)
             return
+        }
+        if (activeTask?.status == ProviderTaskStatus.ACTIVE) {
+            if (System.currentTimeMillis() >= activeTask.leaseUntilMillis) {
+                coordinator.resumePendingTasks(provider)
+                reportStatus("${provider.displayName()}已恢复中断的任务租约")
+            }
+            return
+        }
+        if (pageState.page == PluginPage.CANDIDATE_LIST) {
+            discardAmapEntryPlaceholders(visibleCandidates)
+            if (listFreshnessPolicy.shouldRefresh(listOrigin,
+                    snapshot.providerRuntime.latestLocation, listOpenedAtMillis,
+                    System.currentTimeMillis())) {
+                reportStatus("${provider.displayName()}候选列表位置或时间已过期，返回入口重新读取")
+                executeNavigation(rootNode, packageName, PluginCommand(
+                    commandId = "refresh-list-${System.currentTimeMillis()}",
+                    taskId = "", provider = provider, type = PluginCommandType.NAVIGATE_BACK,
+                    target = com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget(labels = listOf("返回")),
+                    createdAtMillis = System.currentTimeMillis()
+                ), pageState.page)
+                return
+            }
         }
         when (pageState.page) {
             PluginPage.DAILY_QUOTA_EXHAUSTED -> Unit
@@ -290,20 +335,13 @@ class ProviderAutomationWorker(
         candidates: List<com.wu.nearbycheckin.core.model.ProviderPlaceCandidate>,
         resetScrollHistory: Boolean
     ) {
-        if (resetScrollHistory) {
+        if (resetScrollHistory && listOpenedAtMillis == 0L) {
             visitedListFingerprints.clear()
         }
         val nowMillis = System.currentTimeMillis()
         val latestLocation = repository.currentSnapshot()
             .providerRuntime.latestLocation
-        val needsFreshLocation = provider == MapProvider.BAIDU ||
-                candidates.any { candidate ->
-                    candidate.stableHint.startsWith(
-                        DEVICE_LOCATION_HINT_PREFIX
-                    )
-                }
         if (
-            needsFreshLocation &&
             !locationFreshnessPolicy.isFresh(latestLocation, nowMillis)
         ) {
             reportStatus(
@@ -311,19 +349,28 @@ class ProviderAutomationWorker(
             )
             return
         }
+        val hasAmapDeviceLocation = provider == MapProvider.AMAP &&
+                candidates.any(
+                    AmapCandidateTransitionPolicy::isEntryPlaceholder
+                )
+        if (
+            hasAmapDeviceLocation &&
+            (!selectionRateLimiter.canSelect(nowMillis) ||
+                    !gestureDispatcher.canExecuteCommand(provider))
+        ) {
+            return
+        }
         coordinator.beginCandidateRefresh(provider)
         val locationBoundCandidates = candidates.map { candidate ->
             if (
                 latestLocation == null ||
-                !candidate.stableHint.startsWith(
-                    DEVICE_LOCATION_HINT_PREFIX
-                )
+                !AmapCandidateTransitionPolicy.isEntryPlaceholder(candidate)
             ) {
                 candidate
             } else {
-                candidate.copy(
-                    latitude = candidate.latitude ?: latestLocation.latitude,
-                    longitude = candidate.longitude ?: latestLocation.longitude
+                AmapCandidateTransitionPolicy.bindRealLocation(
+                    candidate = candidate,
+                    location = latestLocation
                 )
             }
         }
@@ -334,7 +381,6 @@ class ProviderAutomationWorker(
             profileVersion = plugin.profileVersion
         )
         if (
-            provider == MapProvider.BAIDU &&
             !selectionRateLimiter.canSelect(nowMillis)
         ) {
             return
@@ -344,6 +390,7 @@ class ProviderAutomationWorker(
         }
         val task = coordinator.claimNextTask(provider, WORKER_ID)
         if (task == null) {
+            gestureDispatcher.cancelWaiting(provider)
             scrollCandidatesIfNeeded(
                 rootNode = rootNode,
                 provider = provider,
@@ -362,13 +409,11 @@ class ProviderAutomationWorker(
         )
         val result = executeCommand(rootNode, provider.packageName(), command)
         if (result.success) {
-            if (provider == MapProvider.BAIDU) {
-                selectionRateLimiter.recordSelection(
-                    nowMillis = nowMillis,
-                    movementClass = latestLocation?.movementClass
-                        ?: com.wu.nearbycheckin.core.model.MovementClass.UNKNOWN
-                )
-            }
+            selectionRateLimiter.recordSelection(
+                nowMillis = System.currentTimeMillis(),
+                movementClass = latestLocation?.movementClass
+                    ?: com.wu.nearbycheckin.core.model.MovementClass.UNKNOWN
+            )
             coordinator.beginVerification(task.taskId, command.commandId)
             verificationDeadlineMillis =
                 System.currentTimeMillis() + command.timeoutMillis
@@ -380,6 +425,12 @@ class ProviderAutomationWorker(
                 )
             }
             reportStatus("${provider.displayName()}正在验证：${task.candidate.name}")
+            reportStatus(
+                "${provider.displayName()}事务开始：${task.taskId}；" +
+                        "速度=${latestLocation?.speedKmh}km/h；" +
+                        "定位年龄=${latestLocation?.let { nowMillis - it.timestampMillis }}ms；" +
+                        "候选年龄=${nowMillis - task.candidate.observedAtMillis}ms"
+            )
         } else {
             coordinator.finishTask(
                 task.taskId,
@@ -412,11 +463,64 @@ class ProviderAutomationWorker(
         }
         val normalizedEvidence = resolvedEvidence.copy(
             taskId = task.taskId,
-            commandId = task.commandId.ifBlank {
-                resolvedEvidence.commandId
-            }
+            commandId = resolvedEvidence.commandId.ifBlank { task.commandId }
         )
+        if (resolvedEvidence.commandId.isNotBlank() && task.commandId.isNotBlank() &&
+            resolvedEvidence.commandId != task.commandId
+        ) {
+            reportStatus("${provider.displayName()}忽略不属于当前命令的旧结果，恢复事务")
+            coordinator.finishTask(task.taskId, normalizedEvidence.copy(
+                commandId = task.commandId, resultStatus = MapOperationStatus.TIMEOUT,
+                message = "命令证据关联失效，重新读取当前位置"
+            ))
+            verificationDeadlineMillis = 0L
+            clearAmapFollowUpState()
+            return
+        }
         if (resolvedEvidence.resultStatus == MapOperationStatus.UNKNOWN) {
+            val nowMillis = System.currentTimeMillis()
+            val hardDeadline = task.updatedAtMillis + MAX_VERIFICATION_MILLIS
+            if (verificationDeadlineMillis == 0L) {
+                verificationDeadlineMillis = minOf(nowMillis + VERIFY_RECOVERY_MILLIS, hardDeadline)
+            }
+            verificationDeadlineMillis = minOf(verificationDeadlineMillis, hardDeadline)
+            // 先处理总超时，避免重复点击或页面跳转不断延长同一个事务。
+            if (nowMillis >= verificationDeadlineMillis) {
+                val message = "${task.provider.displayName()}结果验证超时，准备重试；" +
+                        "任务=${task.taskId}；耗时=${nowMillis - task.updatedAtMillis}ms；" +
+                        "页面=${resolvedEvidence.page}；" +
+                        "统计=${resolvedEvidence.beforeCheckInCount}->${resolvedEvidence.afterCheckInCount}；" +
+                        resolvedEvidence.message
+                coordinator.finishTask(task.taskId, normalizedEvidence.copy(
+                    resultStatus = MapOperationStatus.TIMEOUT, message = message
+                ))
+                reportStatus(message)
+                verificationDeadlineMillis = 0L
+                clearAmapFollowUpState()
+                return
+            }
+            if (task.provider == MapProvider.AMAP &&
+                task.candidate.isDeviceLocationCandidate() &&
+                resolvedEvidence.page == PluginPage.CANDIDATE_LIST.name
+            ) {
+                repository.completeProviderTask(task.taskId, ProviderTaskStatus.CANCELLED,
+                    null, "入口已跳转到真实候选列表", nowMillis)
+                verificationDeadlineMillis = 0L
+                clearAmapFollowUpState()
+                return
+            }
+            // 成功弹层可能遮住累计数量，先关闭弹层但保留原事务和首次点击前基准。
+            if (resolvedEvidence.page in setOf(PluginPage.SUCCESS.name, PluginPage.SHARE_PANEL.name)) {
+                val state = PluginPageState(
+                    page = PluginPage.valueOf(resolvedEvidence.page),
+                    profileVersion = resolvedEvidence.profileVersion,
+                    fingerprint = resolvedEvidence.afterFingerprint,
+                    evidence = resolvedEvidence.message
+                )
+                executeNavigation(rootNode, task.provider.packageName(),
+                    registry.resolve(task.provider)?.buildNextAction(state), state.page)
+                return
+            }
             if (
                 task.provider == MapProvider.AMAP &&
                 resolvedEvidence.page == PluginPage.CHECK_IN_ENTRY.name &&
@@ -428,6 +532,7 @@ class ProviderAutomationWorker(
             }
             if (
                 task.provider == MapProvider.AMAP &&
+                resolvedEvidence.page == PluginPage.CHECK_IN_ENTRY.name &&
                 amapSecondTapTaskId == task.taskId &&
                 System.currentTimeMillis() >= amapSecondTapDueMillis
             ) {
@@ -458,30 +563,6 @@ class ProviderAutomationWorker(
                     return
                 }
             }
-            if (verificationDeadlineMillis == 0L) {
-                verificationDeadlineMillis =
-                    System.currentTimeMillis() + VERIFY_RECOVERY_MILLIS
-            }
-            if (System.currentTimeMillis() < verificationDeadlineMillis) {
-                return
-            }
-            val timeoutMessage = if (
-                normalizedEvidence.message.contains("频率提示")
-            ) {
-                "${normalizedEvidence.message}；最终证据验证超时，准备重试"
-            } else {
-                "${task.provider.displayName()}结果验证超时，准备重试"
-            }
-            coordinator.finishTask(
-                task.taskId,
-                normalizedEvidence.copy(
-                    resultStatus = MapOperationStatus.TIMEOUT,
-                    message = timeoutMessage
-                )
-            )
-            reportStatus(timeoutMessage)
-            verificationDeadlineMillis = 0L
-            clearAmapFollowUpState()
             return
         }
         coordinator.finishTask(task.taskId, normalizedEvidence)
@@ -491,26 +572,28 @@ class ProviderAutomationWorker(
             "${task.provider.displayName()}${task.candidate.name}：" +
                     normalizedEvidence.message
         )
-        val dismissCommand = registry.resolve(task.provider)
-            ?.buildNextAction(
+        val dismissPage = when (normalizedEvidence.page) {
+            PluginPage.SUCCESS.name -> PluginPage.SUCCESS
+            PluginPage.ALREADY_COMPLETED.name -> PluginPage.ALREADY_COMPLETED
+            else -> null
+        }
+        val dismissCommand = if (dismissPage != null) {
+            registry.resolve(task.provider)?.buildNextAction(
                 com.wu.nearbycheckin.core.domain.plugin.PluginPageState(
-                    page = if (
-                        normalizedEvidence.resultStatus ==
-                        MapOperationStatus.SUCCESS
-                    ) PluginPage.SUCCESS else PluginPage.ALREADY_COMPLETED,
+                    page = dismissPage,
                     profileVersion = normalizedEvidence.profileVersion,
                     fingerprint = normalizedEvidence.afterFingerprint,
                     evidence = normalizedEvidence.message
                 )
             )
+        } else {
+            null
+        }
         executeNavigation(
             rootNode = rootNode,
             packageName = task.provider.packageName(),
             command = dismissCommand,
-            sourcePage = if (
-                normalizedEvidence.resultStatus ==
-                MapOperationStatus.SUCCESS
-            ) PluginPage.SUCCESS else PluginPage.ALREADY_COMPLETED
+            sourcePage = dismissPage ?: PluginPage.SUCCESS
         )
         coordinator.markListStale(task.provider)
     }
@@ -578,12 +661,8 @@ class ProviderAutomationWorker(
         task: ProviderCheckInTask
     ): PluginCommand? {
         val plugin = registry.resolve(MapProvider.AMAP) ?: return null
-        val command = if (
-            AmapCandidateTransitionPolicy.isEntryPlaceholder(task.candidate)
-        ) {
-            plugin.buildSelectAction(task.candidate)
-        } else {
-            plugin.buildNextAction(
+        // 二次点击只生成动作，不再次 buildSelectAction 覆盖首次数量及候选基准。
+        val command = plugin.buildNextAction(
                 PluginPageState(
                     page = PluginPage.CHECK_IN_ENTRY,
                     profileVersion = plugin.profileVersion,
@@ -591,7 +670,6 @@ class ProviderAutomationWorker(
                     evidence = task.candidate.name
                 )
             )
-        }
         return command?.copy(
             taskId = task.taskId,
             repeatAfterMillis = 0L,
@@ -675,17 +753,33 @@ class ProviderAutomationWorker(
         command: PluginCommand?,
         sourcePage: PluginPage
     ) {
-        if (command == null || command.type == PluginCommandType.BLOCK) {
+        if (command == null || command.type == PluginCommandType.BLOCK ||
+            !navigationRetryPolicy.canRetry(System.currentTimeMillis())
+        ) {
+            gestureDispatcher.cancelWaiting(provider)
             return
+        }
+        val sourceEvidence = repository.currentSnapshot().providerRuntime.let { runtime ->
+            if (provider == MapProvider.BAIDU) runtime.baiduPluginEvidence
+            else runtime.amapPluginEvidence
         }
         val result = executeCommand(rootNode, packageName, command)
         if (result.success && command.type in NAVIGATION_COMMAND_TYPES) {
             pendingNavigationSourcePage = sourcePage
             pendingNavigationCommandType = command.type
+            pendingNavigationEvidence = sourceEvidence
             navigationDeadlineMillis =
                 System.currentTimeMillis() + NAVIGATION_SETTLE_MILLIS
+            gestureDispatcher.reserveNavigation(provider, NAVIGATION_SETTLE_MILLIS)
             reportStatus(
-                "${provider.displayName()}已提交${command.type.name}，等待页面变化"
+                if (
+                    provider == MapProvider.AMAP &&
+                    command.type == PluginCommandType.DISMISS_RESULT
+                ) {
+                    "高德地图已提交“收下”确认，等待成功页关闭"
+                } else {
+                    "${provider.displayName()}已提交${command.type.name}，等待页面变化"
+                }
             )
         } else {
             reportStatus(result.message)
@@ -694,11 +788,21 @@ class ProviderAutomationWorker(
 
     // 页面未变化时等待界面稳定，超时后清除假成功并允许重新执行导航。
     private fun waitForNavigationSettlement(
-        currentPage: PluginPage
+        currentState: PluginPageState
     ): Boolean {
         val sourcePage = pendingNavigationSourcePage ?: return false
-        if (currentPage != sourcePage) {
+        val currentPage = currentState.page
+        if (currentPage != sourcePage ||
+            currentState.evidence != pendingNavigationEvidence
+        ) {
+            if (provider == MapProvider.AMAP &&
+                pendingNavigationCommandType == PluginCommandType.DISMISS_RESULT &&
+                currentPage !in setOf(PluginPage.SUCCESS, PluginPage.ALREADY_COMPLETED)
+            ) {
+                reportStatus("高德地图结果确认页已关闭，继续下一地点")
+            }
             clearPendingNavigation()
+            navigationRetryPolicy.reset()
             return false
         }
         if (System.currentTimeMillis() < navigationDeadlineMillis) {
@@ -709,14 +813,23 @@ class ProviderAutomationWorker(
                     "后页面未变化，准备重试"
         )
         clearPendingNavigation()
+        navigationGestureFallback = true
+        navigationRetryPolicy.recordTimeout(System.currentTimeMillis())
+        if (!navigationRetryPolicy.canRetry(System.currentTimeMillis())) {
+            gestureDispatcher.cancelWaiting(provider)
+            reportStatus("${provider.displayName()}连续跳转未生效，暂停10秒并让出点击权")
+        }
         return false
     }
 
     // 清除已经完成或超时的页面导航等待状态。
     private fun clearPendingNavigation() {
+        gestureDispatcher.releaseNavigation(provider)
         pendingNavigationSourcePage = null
         pendingNavigationCommandType = null
+        pendingNavigationEvidence = ""
         navigationDeadlineMillis = 0L
+        navigationGestureFallback = false
     }
 
     // 在 Worker 串行锁内执行一条命令。
@@ -745,6 +858,7 @@ class ProviderAutomationWorker(
                 rootNode = rootNode,
                 packageName = packageName,
                 command = command,
+                forceGesture = navigationGestureFallback && command.type in NAVIGATION_COMMAND_TYPES,
                 onDeferredRepeatFirstTapCompleted = { completed ->
                     onAmapFirstTapCompleted(
                         taskId = command.taskId,
@@ -767,7 +881,7 @@ class ProviderAutomationWorker(
         completed: Boolean
     ) {
         if (
-            provider != MapProvider.AMAP ||
+            !running || provider != MapProvider.AMAP ||
             taskId.isBlank() ||
             repository.currentSnapshot().providerTasks.none { task ->
                 task.taskId == taskId &&
@@ -884,17 +998,19 @@ class ProviderAutomationWorker(
         const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
         const val POLL_INTERVAL_MILLIS = 1_000L
         const val VERIFY_RECOVERY_MILLIS = 10_000L
+        const val MAX_VERIFICATION_MILLIS = 45_000L
         const val AMAP_SECOND_TAP_FALLBACK_MILLIS = 2_000L
         const val AMAP_FIRST_TAP_COMPLETION_TIMEOUT_MILLIS = 30_000L
         const val AMAP_TRANSIENT_EVIDENCE_MAX_AGE_MILLIS = 10_000L
         const val NAVIGATION_SETTLE_MILLIS = 1_500L
         const val STATUS_REPEAT_INTERVAL_MILLIS = 30_000L
         const val MAX_CANDIDATE_SCROLLS = 5
-        const val DEVICE_LOCATION_HINT_PREFIX = "device-real-location"
         val NAVIGATION_COMMAND_TYPES = setOf(
             PluginCommandType.NAVIGATE_MINE,
             PluginCommandType.NAVIGATE_FOOTPRINT,
             PluginCommandType.OPEN_CHECK_IN_ENTRY,
+            PluginCommandType.SCROLL_CANDIDATES,
+            PluginCommandType.NAVIGATE_BACK,
             PluginCommandType.DISMISS_RESULT
         )
         val ACTIVE_STATUSES = setOf(
@@ -911,7 +1027,49 @@ class ProviderAutomationWorker(
     }
 }
 
+internal class NavigationRetryPolicy {
+
+    private var timeouts = 0
+    private var retryAfterMillis = 0L
+
+    // 连续三次无变化后进入有限退避，防止失败地图持续争抢共享点击。
+    fun recordTimeout(nowMillis: Long) {
+        timeouts += 1
+        if (timeouts >= 3) {
+            timeouts = 0
+            retryAfterMillis = nowMillis + 10_000L
+        }
+    }
+
+    // 判断地图是否已经结束无效点击退避。
+    fun canRetry(nowMillis: Long): Boolean = nowMillis >= retryAfterMillis
+
+    // 页面确认变化或 Worker 停止后清除旧失败计数。
+    fun reset() {
+        timeouts = 0
+        retryAfterMillis = 0L
+    }
+}
+
 internal object AmapCandidateTransitionPolicy {
+
+    // 把入口页临时候选绑定到约一米级真实坐标，兼顾连续调度与同位置永久去重。
+    fun bindRealLocation(
+        candidate: ProviderPlaceCandidate,
+        location: LocationSnapshot
+    ): ProviderPlaceCandidate {
+        return candidate.copy(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            stableHint = "$DEVICE_LOCATION_HINT:" +
+                    String.format(
+                        Locale.ROOT,
+                        REAL_LOCATION_FORMAT,
+                        location.latitude,
+                        location.longitude
+                    )
+        )
+    }
 
     // 判断真实地址列表是否至少包含一个可执行地点。
     fun hasRealCandidate(candidates: List<ProviderPlaceCandidate>): Boolean {
@@ -920,10 +1078,11 @@ internal object AmapCandidateTransitionPolicy {
 
     // 识别入口页的设备位置槽位和历史误识别“当前位置”任务。
     fun isEntryPlaceholder(candidate: ProviderPlaceCandidate): Boolean {
-        return candidate.stableHint.startsWith(DEVICE_LOCATION_HINT) ||
+        return candidate.isDeviceLocationCandidate() ||
                 candidate.name.trim().trimEnd(':', '：') == CURRENT_LOCATION
     }
 
     private const val DEVICE_LOCATION_HINT = "device-real-location"
     private const val CURRENT_LOCATION = "当前位置"
+    private const val REAL_LOCATION_FORMAT = "%.5f,%.5f"
 }

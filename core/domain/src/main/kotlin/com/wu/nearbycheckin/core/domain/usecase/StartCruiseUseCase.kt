@@ -24,8 +24,6 @@ sealed interface StartCruiseResult {
 
     data object LocationPermissionRequired : StartCruiseResult
 
-    data object NotificationPermissionRequired : StartCruiseResult
-
     data object OverlayPermissionRequired : StartCruiseResult
 
     data object AccessibilityServiceRequired : StartCruiseResult
@@ -110,8 +108,6 @@ class StartCruiseUseCase(
                 )
             !locationPermissionGranted ->
                 StartCruiseResult.LocationPermissionRequired
-            !notificationPermissionGranted ->
-                StartCruiseResult.NotificationPermissionRequired
             !overlayPermissionGranted ->
                 StartCruiseResult.OverlayPermissionRequired
             !accessibilityServiceEnabled ->

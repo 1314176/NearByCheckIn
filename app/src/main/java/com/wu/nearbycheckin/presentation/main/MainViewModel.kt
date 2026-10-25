@@ -10,12 +10,19 @@ package com.wu.nearbycheckin.presentation.main
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeout
 
 import com.wu.nearbycheckin.core.domain.gateway.CruisePrecheck
 import com.wu.nearbycheckin.core.domain.usecase.ClearRecordsUseCase
@@ -52,13 +59,19 @@ class MainViewModel(
     private val effectChannel = Channel<MainUiEffect>(
         capacity = Channel.BUFFERED
     )
+    private val startRequestGate = StartRequestGate()
+    private var startRequestJob: Job? = null
 
     val uiState: StateFlow<MainUiState> = mutableUiState.asStateFlow()
     val effects = effectChannel.receiveAsFlow()
 
     init {
-        startCruiseUseCase.initializeMainEntry()
-        refreshPrecheck()
+        viewModelScope.launch {
+            runPlatformCall("初始化启动状态") {
+                startCruiseUseCase.initializeMainEntry()
+            }
+            refreshPrecheck()
+        }
         viewModelScope.launch {
             repository.automationSnapshot.collect { snapshot ->
                 mutableUiState.value =
@@ -72,18 +85,14 @@ class MainViewModel(
         when (event) {
             MainUiEvent.StartCruise,
             MainUiEvent.RetryStartCruise ->
-                handleStartResult(startCruiseUseCase())
-            MainUiEvent.StopCruise -> {
-                stopCruiseUseCase()
-                emitEffect("巡航自动化已停止")
-            }
+                startCruise()
+            MainUiEvent.StopCruise ->
+                stopCruise()
             MainUiEvent.AcceptPrivacy -> {
                 mutableUiState.value = mutableUiState.value.copy(
                     showPrivacyDialog = false
                 )
-                handleStartResult(
-                    startCruiseUseCase.grantPrivacyConsentAndStart()
-                )
+                startCruise(grantPrivacyConsent = true)
             }
             MainUiEvent.DismissPrivacy -> {
                 mutableUiState.value = mutableUiState.value.copy(
@@ -99,14 +108,18 @@ class MainViewModel(
             MainUiEvent.InitializeAmap ->
                 requestMapLaunch(listOf(AMAP_PACKAGE_NAME))
             is MainUiEvent.MapLaunchReported -> {
-                repository.updateAutomationStatus(
-                    statusText = event.statusText,
-                    source = "分屏启动",
-                    level = event.statusText.toLogLevel()
-                )
                 mutableUiState.value = mutableUiState.value.copy(
                     mapChainStartupStatus = event.statusText
                 )
+                viewModelScope.launch {
+                    runPlatformCall("记录分屏启动状态") {
+                        repository.updateAutomationStatus(
+                            statusText = event.statusText,
+                            source = "分屏启动",
+                            level = event.statusText.toLogLevel()
+                        )
+                    }
+                }
             }
             MainUiEvent.CompleteBaiduPaneReplacement -> {
                 mutableUiState.value = mutableUiState.value.copy(
@@ -167,18 +180,80 @@ class MainViewModel(
             }
             MainUiEvent.OpenAccessibilitySettings ->
                 sendEffect(MainUiEffect.OpenAccessibilitySettings)
-            MainUiEvent.ResumeBlockedTransaction -> {
-                val resumed = providerCoordinator.manualResume(
-                    MapProvider.BAIDU
-                ) || coordinator.manualResume()
-                emitEffect(
-                    if (resumed) {
-                        "已恢复被阻断的事务"
-                    } else {
-                        "当前没有可恢复的阻断事务"
-                    }
-                )
+            MainUiEvent.ResumeBlockedTransaction ->
+                resumeBlockedTransaction()
+        }
+    }
+
+    // 在后台线程执行一次启动请求并合并连续点击。
+    private fun startCruise(grantPrivacyConsent: Boolean = false) {
+        if (!startRequestGate.tryAcquire()) {
+            emitEffect("启动检查正在进行，请稍候")
+            return
+        }
+        startRequestJob = viewModelScope.launch {
+            try {
+                startWithAccessibilityConnectionRetry(
+                    grantPrivacyConsent = grantPrivacyConsent
+                )?.let(::handleStartResult)
+            } finally {
+                startRequestGate.release()
+                startRequestJob = null
             }
+        }
+    }
+
+    // 给刚完成系统绑定的无障碍服务短暂重试窗口，避免误要求再次开启权限。
+    private suspend fun startWithAccessibilityConnectionRetry(
+        grantPrivacyConsent: Boolean
+    ): StartCruiseResult? {
+        var result = runPlatformCall("启动巡航自动化") {
+            if (grantPrivacyConsent) {
+                startCruiseUseCase.grantPrivacyConsentAndStart()
+            } else {
+                startCruiseUseCase()
+            }
+        } ?: return null
+
+        repeat(ACCESSIBILITY_CONNECTION_RETRY_COUNT) {
+            if (result !is StartCruiseResult.AccessibilityServiceRequired) {
+                return result
+            }
+            delay(ACCESSIBILITY_CONNECTION_RETRY_DELAY_MILLIS)
+            result = runPlatformCall("等待无障碍服务连接") {
+                startCruiseUseCase()
+            } ?: return null
+        }
+        return result
+    }
+
+    // 取消尚未完成的启动后在后台停止巡航服务和事务。
+    private fun stopCruise() {
+        val activeStartRequest = startRequestJob
+        activeStartRequest?.cancel()
+        viewModelScope.launch {
+            activeStartRequest?.join()
+            runPlatformCall("停止巡航自动化") {
+                stopCruiseUseCase()
+            } ?: return@launch
+            emitEffect("巡航自动化已停止")
+        }
+    }
+
+    // 在后台恢复阻断事务，避免持久化读写占用界面线程。
+    private fun resumeBlockedTransaction() {
+        viewModelScope.launch {
+            val resumed = runPlatformCall("恢复阻断事务") {
+                providerCoordinator.manualResume(MapProvider.BAIDU) ||
+                        coordinator.manualResume()
+            } ?: return@launch
+            emitEffect(
+                if (resumed) {
+                    "已恢复被阻断的事务"
+                } else {
+                    "当前没有可恢复的阻断事务"
+                }
+            )
         }
     }
 
@@ -193,15 +268,11 @@ class MainViewModel(
             }
             StartCruiseResult.LocationPermissionRequired ->
                 sendEffect(MainUiEffect.RequestLocationPermission)
-            StartCruiseResult.NotificationPermissionRequired ->
-                sendEffect(
-                    MainUiEffect.RequestNotificationPermission
-                )
             StartCruiseResult.OverlayPermissionRequired ->
                 sendEffect(MainUiEffect.RequestOverlayPermission)
             StartCruiseResult.AccessibilityServiceRequired -> {
                 emitEffect(
-                    "请先启用 NearbyCheckIn 双地图诊断无障碍服务"
+                    "无障碍服务未真实连接，请在系统设置中重新启用一次"
                 )
                 sendEffect(MainUiEffect.OpenAccessibilitySettings)
             }
@@ -223,43 +294,55 @@ class MainViewModel(
 
     // 刷新地图安装状态并保持其他 UI 状态不变。
     private fun refreshPrecheck() {
-        val precheck = startCruiseUseCase.inspectPrecheck()
-        mutableUiState.value = mutableUiState.value.withPrecheck(
-            precheck
-        )
+        viewModelScope.launch {
+            val precheck = runPlatformCall("刷新启动条件") {
+                startCruiseUseCase.inspectPrecheck()
+            } ?: return@launch
+            mutableUiState.value = mutableUiState.value.withPrecheck(
+                precheck
+            )
+        }
     }
 
     // 校验双地图安装状态并请求前台创建相邻窗口。
     private fun requestDualMapSplit() {
-        val precheck = startCruiseUseCase.inspectPrecheck()
-        if (!precheck.allMapsInstalled) {
-            emitEffect("百度地图或高德地图未安装，无法创建双地图分屏")
-            return
+        viewModelScope.launch {
+            val precheck = runPlatformCall("检查双地图安装状态") {
+                startCruiseUseCase.inspectPrecheck()
+            } ?: return@launch
+            if (!precheck.allMapsInstalled) {
+                emitEffect("百度地图或高德地图未安装，无法创建双地图分屏")
+                return@launch
+            }
+            mutableUiState.value = mutableUiState.value.copy(
+                isBaiduPaneReplacementPending = true
+            )
+            sendEffect(MainUiEffect.OpenDualMapSplit)
         }
-        mutableUiState.value = mutableUiState.value.copy(
-            isBaiduPaneReplacementPending = true
-        )
-        sendEffect(MainUiEffect.OpenDualMapSplit)
     }
 
     // 请求 Activity 以前台身份打开指定地图应用。
     private fun requestMapLaunch(packageNames: List<String>) {
-        val precheck = startCruiseUseCase.inspectPrecheck()
-        val installedPackages = packageNames.filter { packageName ->
-            when (packageName) {
-                BAIDU_MAP_PACKAGE_NAME -> precheck.baiduInstalled
-                AMAP_PACKAGE_NAME -> precheck.amapInstalled
-                else -> false
+        viewModelScope.launch {
+            val precheck = runPlatformCall("检查地图安装状态") {
+                startCruiseUseCase.inspectPrecheck()
+            } ?: return@launch
+            val installedPackages = packageNames.filter { packageName ->
+                when (packageName) {
+                    BAIDU_MAP_PACKAGE_NAME -> precheck.baiduInstalled
+                    AMAP_PACKAGE_NAME -> precheck.amapInstalled
+                    else -> false
+                }
             }
-        }
-        if (installedPackages.size != packageNames.size) {
-            emitEffect("目标地图未安装，无法初始化链式启动授权")
-            return
-        }
+            if (installedPackages.size != packageNames.size) {
+                emitEffect("目标地图未安装，无法初始化链式启动授权")
+                return@launch
+            }
 
-        sendEffect(
-            MainUiEffect.OpenMapApplications(installedPackages)
-        )
+            sendEffect(
+                MainUiEffect.OpenMapApplications(installedPackages)
+            )
+        }
     }
 
     // 查询指定范围记录并打开只读记录对话框。
@@ -334,6 +417,29 @@ class MainViewModel(
                 "百度完成键清空失败"
             }
         )
+    }
+
+    // 限时在 IO 线程执行系统或持久化调用并把异常转换为可见提示。
+    private suspend fun <T> runPlatformCall(
+        actionName: String,
+        block: () -> T
+    ): T? {
+        return try {
+            withTimeout(PLATFORM_CALL_TIMEOUT_MILLIS) {
+                runInterruptible(Dispatchers.IO, block)
+            }
+        } catch (_: TimeoutCancellationException) {
+            emitEffect("$actionName 超时，已安全终止本次请求，请重试")
+            null
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: RuntimeException) {
+            val reason = error.message.orEmpty().ifBlank {
+                error::class.java.simpleName
+            }
+            emitEffect("$actionName 失败：$reason")
+            null
+        }
     }
 
     // 把普通提示转换为一次性 Toast Effect。
@@ -432,6 +538,33 @@ class MainViewModel(
     private companion object {
         const val BAIDU_MAP_PACKAGE_NAME = "com.baidu.BaiduMap"
         const val AMAP_PACKAGE_NAME = "com.autonavi.minimap"
+        const val ACCESSIBILITY_CONNECTION_RETRY_COUNT = 4
+        const val ACCESSIBILITY_CONNECTION_RETRY_DELAY_MILLIS = 500L
+        const val PLATFORM_CALL_TIMEOUT_MILLIS = 10_000L
+    }
+}
+
+/**
+ * 合并并发启动请求，确保同一时间只有一条启动链路修改会话状态。
+ */
+internal class StartRequestGate {
+
+    private var acquired = false
+
+    // 尝试获得唯一启动权并拒绝重复请求。
+    @Synchronized
+    fun tryAcquire(): Boolean {
+        if (acquired) {
+            return false
+        }
+        acquired = true
+        return true
+    }
+
+    // 释放启动权并允许失败或停止后的后续重试。
+    @Synchronized
+    fun release() {
+        acquired = false
     }
 }
 

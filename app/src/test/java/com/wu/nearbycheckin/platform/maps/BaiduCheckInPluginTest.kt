@@ -26,6 +26,47 @@ class BaiduCheckInPluginTest {
 
     private val plugin = BaiduCheckInPlugin()
 
+    // 验证当前地点的明确完成提示仍可关闭，不受累计统计防误判影响。
+    @Test
+    fun recognizesExplicitCompletedPlace() {
+        val state = plugin.inspect(window(node("该地点已打卡"), node("完成")))
+        assertEquals(PluginPage.ALREADY_COMPLETED, state.page)
+        assertEquals(PluginCommandType.DISMISS_RESULT, plugin.buildNextAction(state)?.type)
+    }
+
+    // 验证真实窗口外的残留成功页不会遮蔽当前打卡入口。
+    @Test
+    fun ignoresOffscreenResultPage() {
+        val state = plugin.inspect(window(
+            PluginNodeSnapshot(viewId = "android:id/content", right = 1080, bottom = 1188),
+            PluginNodeSnapshot(text = "打卡成功", left = -200, right = 0, bottom = 300),
+            PluginNodeSnapshot(text = "立即打卡", top = 500, right = 400, bottom = 600)
+        ))
+        assertEquals(PluginPage.CHECK_IN_ENTRY, state.page)
+    }
+
+    // 验证累计统计和页面返回按钮不会误触发关闭结果动作。
+    @Test
+    fun keepsSummaryWithBackButtonOnEntryPage() {
+        val state = plugin.inspect(window(
+            node("返回"), node("已打卡"), node("2820"),
+            node("个地点"), node("立即打卡")
+        ))
+        assertEquals(PluginPage.CHECK_IN_ENTRY, state.page)
+        assertEquals(PluginCommandType.OPEN_CHECK_IN_ENTRY,
+            plugin.buildNextAction(state)?.type)
+    }
+
+    // 验证列表中的已打卡行和返回按钮不会把整个列表误识别为结果页。
+    @Test
+    fun keepsCompletedRowsOnCandidatePage() {
+        val state = plugin.inspect(window(
+            node("选择打卡地点"), node("返回"),
+            node("人民公园"), node("已打卡"), node("80米")
+        ))
+        assertEquals(PluginPage.CANDIDATE_LIST, state.page)
+    }
+
     // 验证候选列表行被转换为百度 Provider 候选。
     @Test
     fun readsVisibleCandidateRow() {
@@ -90,9 +131,9 @@ class BaiduCheckInPluginTest {
         assertEquals(1705, evidence.afterCheckInCount)
     }
 
-    // 验证成功文案出现但地点统计未增加时不会写成新增成功。
+    // 验证成功页统计延迟刷新时继续等待，不提前永久跳过该地点。
     @Test
-    fun treatsUnchangedCountAsAlreadyCompleted() {
+    fun waitsForDelayedCountOnSuccessPage() {
         plugin.inspect(
             window(
                 node("打卡成功"),
@@ -117,9 +158,14 @@ class BaiduCheckInPluginTest {
         )
 
         assertEquals(
-            MapOperationStatus.ALREADY_COMPLETED,
+            MapOperationStatus.UNKNOWN,
             evidence.resultStatus
         )
+        val returned = plugin.verifyResult(window(
+            node("已打卡"), node("1705"), node("个地点"), node("立即打卡")
+        ))
+        assertEquals(MapOperationStatus.SUCCESS, returned.resultStatus)
+        assertEquals(1704, returned.beforeCheckInCount)
     }
 
     // 验证未出现成功弹层时也能依据打卡首页地点总数增加完成事务。
@@ -185,6 +231,76 @@ class BaiduCheckInPluginTest {
         assertEquals(PluginPage.FOOTPRINT, state.page)
         assertEquals(PluginCommandType.OPEN_CHECK_IN_ENTRY, command?.type)
         assertEquals(listOf("打卡"), command?.target?.labels)
+    }
+
+    // 验证旧足迹页同时出现相机模板入口时只绑定与轨迹同排的底部打卡页签。
+    @Test
+    fun avoidsTemplateToolbarWhenOpeningFootprintTab() {
+        val state = plugin.inspect(window(
+            PluginNodeSnapshot(text = "打卡", viewId = "com.baidu.BaiduMap:id/tv_entry",
+                left = 968, top = 664, right = 1020, bottom = 700, fingerprint = "camera"),
+            PluginNodeSnapshot(text = "角落", top = 1527, right = 593, bottom = 1588),
+            PluginNodeSnapshot(text = "轨迹", top = 1527, right = 772, bottom = 1588),
+            PluginNodeSnapshot(text = "打卡", top = 1527, right = 950, bottom = 1588,
+                fingerprint = "check-in-tab")
+        ))
+
+        assertEquals(PluginPage.FOOTPRINT, state.page)
+        assertEquals("check-in-tab", plugin.buildNextAction(state)?.target?.nodeFingerprint)
+    }
+
+    // 验证“打卡当前位置”后的立即打卡优先于模板入口，并使用真实节点指纹。
+    @Test
+    fun selectsImmediateCheckInBesideCurrentPlace() {
+        val state = plugin.inspect(window(
+            node("打卡", fingerprint = "camera"), node("角落"), node("轨迹"),
+            node("打卡当前位置："), node("浦联佳苑"),
+            node("立即打卡", fingerprint = "real-check-in")
+        ))
+        val command = plugin.buildNextAction(state)
+
+        assertEquals(PluginPage.CHECK_IN_ENTRY, state.page)
+        assertEquals(listOf("立即打卡"), command?.target?.labels)
+        assertEquals("real-check-in", command?.target?.nodeFingerprint)
+    }
+
+    // 验证新版模板主页可自动返回足迹，不点击相机打卡或挑选任何模板。
+    @Test
+    fun returnsFromNewTemplatePage() {
+        val state = plugin.inspect(window(
+            node("搜索打卡点、地点"), node("打卡"),
+            node("打卡模版抢先试用"), node("手帐贴纸风"),
+            node("专属冰箱贴"), node("街景推荐")
+        ))
+        val command = plugin.buildNextAction(state)
+
+        assertEquals(PluginPage.RECOVERY, state.page)
+        assertEquals(PluginCommandType.NAVIGATE_BACK, command?.type)
+        assertEquals("com.baidu.BaiduMap:id/btn_back", command?.target?.viewId)
+        assertTrue(plugin.readCandidates(window(node("打卡模板"))).isEmpty())
+    }
+
+    // 验证中文“模板”变体仍可恢复，且隐藏的立即打卡不被沿用到另一页面。
+    @Test
+    fun recoversTemplateVariantWithoutUsingOffscreenCheckIn() {
+        val state = plugin.inspect(window(
+            PluginNodeSnapshot(viewId = "android:id/content", right = 1080, bottom = 1188),
+            PluginNodeSnapshot(text = "打卡模板抢先试用", right = 600, bottom = 700),
+            PluginNodeSnapshot(text = "立即打卡", top = 1300, right = 600, bottom = 1400)
+        ))
+        assertEquals(PluginPage.RECOVERY, state.page)
+        assertEquals(PluginCommandType.NAVIGATE_BACK, plugin.buildNextAction(state)?.type)
+    }
+
+    // 验证分屏裁切隐藏当前位置按钮时滚动面板，不重复打开模板入口。
+    @Test
+    fun scrollsToRevealCurrentPlaceButtonWhenSummaryIsVisible() {
+        val state = plugin.inspect(window(
+            node("角落"), node("轨迹"), node("打卡"),
+            node("已打卡"), node("3123"), node("个地点")
+        ))
+        assertEquals(PluginCommandType.SCROLL_CANDIDATES,
+            plugin.buildNextAction(state)?.type)
     }
 
     // 验证“点亮更多地点”不会再次被当成自动打卡入口。

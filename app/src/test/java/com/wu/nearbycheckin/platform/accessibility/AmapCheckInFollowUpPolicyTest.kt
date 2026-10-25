@@ -6,15 +6,18 @@
 
 package com.wu.nearbycheckin.platform.accessibility
 
+import com.wu.nearbycheckin.core.model.LocationSnapshot
 import com.wu.nearbycheckin.core.model.MapOperationEvidence
 import com.wu.nearbycheckin.core.model.MapOperationStatus
 import com.wu.nearbycheckin.core.model.MapProvider
+import com.wu.nearbycheckin.core.model.MovementClass
 import com.wu.nearbycheckin.core.model.ProviderPlaceCandidate
 import com.wu.nearbycheckin.platform.maps.MapUiAction
 import com.wu.nearbycheckin.platform.maps.MapUiPage
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -131,6 +134,32 @@ class AmapCheckInFollowUpPolicyTest {
         )
     }
 
+    // 验证高德真实位置键能区分相邻位置并继续复用同一舍入位置。
+    @Test
+    fun bindsEntryCandidateToPreciseRealLocation() {
+        val placeholder = candidate(
+            name = "当前高德打卡位置",
+            stableHint = "device-real-location"
+        )
+        val first = AmapCandidateTransitionPolicy.bindRealLocation(
+            candidate = placeholder,
+            location = location(31.268300, 121.439810)
+        )
+        val sameRoundedLocation =
+            AmapCandidateTransitionPolicy.bindRealLocation(
+                candidate = placeholder,
+                location = location(31.268301, 121.439811)
+            )
+        val nextLocation = AmapCandidateTransitionPolicy.bindRealLocation(
+            candidate = placeholder,
+            location = location(31.268315, 121.439825)
+        )
+
+        assertEquals(first.toPlaceKey(), sameRoundedLocation.toPlaceKey())
+        assertNotEquals(first.toPlaceKey(), nextLocation.toPlaceKey())
+        assertTrue(first.stableHint.startsWith("device-real-location:"))
+    }
+
     // 创建高德未知结果证据。
     private fun evidence(message: String): MapOperationEvidence {
         return MapOperationEvidence(
@@ -163,6 +192,21 @@ class AmapCheckInFollowUpPolicyTest {
             fingerprint = name,
             observedAtMillis = 100L,
             stableHint = stableHint
+        )
+    }
+
+    // 创建用于真实位置键测试的有效定位快照。
+    private fun location(
+        latitude: Double,
+        longitude: Double
+    ): LocationSnapshot {
+        return LocationSnapshot(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = 3F,
+            speedKmh = 5F,
+            timestampMillis = 1_000L,
+            movementClass = MovementClass.MOVING
         )
     }
 }

@@ -57,4 +57,33 @@ class StartCruiseUseCaseTest {
         assertFalse(platform.autoSplitRequested)
         assertTrue(platform.serviceStarted)
     }
+
+    // 验证通知展示权限被拒绝时仍能启动必需的前台自动化服务。
+    @Test
+    fun startsWhenNotificationPermissionIsDenied() {
+        val repository = TestCheckInTransactionRepository()
+        val platform = FakeCruisePlatformGateway().apply {
+            precheck = precheck.copy(
+                notificationPermissionGranted = false
+            )
+        }
+        val clock = AppClock { 100_000L }
+        val coordinator = CheckInCoordinator(
+            repository = repository,
+            candidateEvaluator = CandidateEvaluator(),
+            stateMachine = DualMapStateMachine(),
+            clock = clock
+        )
+        val useCase = StartCruiseUseCase(
+            platformGateway = platform,
+            coordinator = coordinator,
+            repository = repository,
+            clock = clock
+        )
+
+        val result = useCase()
+
+        assertTrue(result is StartCruiseResult.Started)
+        assertTrue(platform.serviceStarted)
+    }
 }

@@ -21,6 +21,19 @@ import org.junit.Test
  */
 class ProviderMovementPolicyTest {
 
+    // 高速驶离五百米外后刷新旧列表，静止误差漂移不触发位置刷新。
+    @Test
+    fun candidateListExpiresAfterRealMovementOrTime() {
+        val policy = ProviderCandidateListFreshnessPolicy()
+        val origin = LocationSnapshot(31.0, 121.0, 3.8F, 150F, 1_000)
+        assertFalse(policy.shouldRefresh(origin, origin.copy(latitude = 31.0001), 1_000, 2_000))
+        assertTrue(policy.shouldRefresh(origin, origin.copy(latitude = 31.006), 1_000, 17_000))
+        assertFalse(policy.shouldRefresh(origin, origin, 1_000, 30_999))
+        assertTrue(policy.shouldRefresh(origin, origin, 1_000, 31_000))
+        assertFalse(policy.shouldRefresh(origin.copy(accuracyMeters = 400F),
+            origin.copy(latitude = 31.006, accuracyMeters = 400F), 1_000, 17_000))
+    }
+
     // 验证低速且小位移归类为静止。
     @Test
     fun classifiesStableLocationAsStatic() {
