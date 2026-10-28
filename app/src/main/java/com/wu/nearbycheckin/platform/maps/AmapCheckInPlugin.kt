@@ -10,6 +10,7 @@ package com.wu.nearbycheckin.platform.maps
 import java.util.UUID
 
 import com.wu.nearbycheckin.core.domain.plugin.MapAutomationPlugin
+import com.wu.nearbycheckin.core.domain.plugin.CheckInRangeEvidencePolicy
 import com.wu.nearbycheckin.core.domain.plugin.MapWindowSnapshot
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommand
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget
@@ -44,6 +45,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         val labels = visibleNodes.flatMap(PluginNodeSnapshot::labels)
         val joined = labels.filterNot { it.contains(":id/") }.distinct().joinToString("|")
         val page = when {
+            labels.any(CheckInRangeEvidencePolicy::matches) -> PluginPage.OUT_OF_RANGE
             labels.any { value -> BLOCKED_LABELS.any(value::contains) } ->
                 PluginPage.BLOCKED
             isSuccessPage(labels, joined) ->
@@ -79,7 +81,12 @@ class AmapCheckInPlugin : MapAutomationPlugin {
             profileVersion = profileVersion,
             fingerprint = window.fingerprint(),
             evidence = joined.take(MAX_EVIDENCE_LENGTH),
-            blockedReason = if (page == PluginPage.BLOCKED) {
+            navigationTarget = if (page == PluginPage.OUT_OF_RANGE) {
+                CheckInRangeEvidencePolicy.dismissTarget(visibleNodes)
+            } else null,
+            blockedReason = if (page == PluginPage.OUT_OF_RANGE) {
+                labels.firstOrNull(CheckInRangeEvidencePolicy::matches).orEmpty()
+            } else if (page == PluginPage.BLOCKED) {
                 labels.firstOrNull { value ->
                     BLOCKED_LABELS.any(value::contains)
                 }.orEmpty()
@@ -89,18 +96,22 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         )
     }
 
-    // 读取高德可见地点，旧式开始打卡页生成一个真实位置候选槽位。
+    // 仅从选择地址页读取候选，足迹入口只生成当前位置槽位，不处理历史记录行。
     override fun readCandidates(
         window: MapWindowSnapshot
     ): List<ProviderPlaceCandidate> {
         val semanticNodes = window.nodes.visibleInCurrentWindow().filter { node ->
             node.labels().isNotEmpty()
         }
-        val rows = semanticNodes
-            .candidateRows()
-            .mapNotNull { row ->
+        val labels = semanticNodes.flatMap(PluginNodeSnapshot::labels)
+        val isCandidateList = labels.any { label -> CANDIDATE_PAGE_LABELS.any(label::contains) }
+        val rows = if (isCandidateList) {
+            semanticNodes.candidateRows().mapNotNull { row ->
                 row.toCandidate(window.capturedAtMillis)
             }
+        } else {
+            emptyList()
+        }
         if (rows.isNotEmpty()) {
             return rows.distinctBy { candidate -> candidate.toPlaceKey() }
         }
@@ -123,6 +134,13 @@ class AmapCheckInPlugin : MapAutomationPlugin {
 
     // 根据高德页面生成导航、读取或关闭命令。
     override fun buildNextAction(state: PluginPageState): PluginCommand? {
+        if (state.page == PluginPage.OUT_OF_RANGE) {
+            val target = state.navigationTarget
+            return newCommand(
+                if (target != null) PluginCommandType.DISMISS_RESULT else PluginCommandType.NAVIGATE_BACK,
+                target?.labels ?: listOf("返回", "返回上一页"), state.blockedReason
+            ).let { command -> target?.let { command.copy(target = it) } ?: command }
+        }
         if (state.page == PluginPage.CHECK_IN_ENTRY) {
             return newCommand(
                 type = PluginCommandType.OPEN_CHECK_IN_ENTRY,
@@ -147,6 +165,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
                 PluginCommandType.DISMISS_RESULT to DISMISS_LABELS
             PluginPage.SHARE_PANEL -> return null
             PluginPage.RECOVERY -> return null
+            PluginPage.OUT_OF_RANGE -> return null
             PluginPage.DAILY_QUOTA_EXHAUSTED,
             PluginPage.BLOCKED -> PluginCommandType.BLOCK to emptyList()
             PluginPage.UNKNOWN -> return null
@@ -181,7 +200,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         ).also { command -> pendingCommandId = command.commandId }
     }
 
-    // 仅用地点数量增长或明确结果页确认高德成功，频率提示只保留为诊断信息。
+    // 仅用同口径地点数量新增一个确认成功，卡片和频率提示均不能替代数量证据。
     override fun verifyResult(
         window: MapWindowSnapshot
     ): MapOperationEvidence {
@@ -193,10 +212,12 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         val checkInCountIncreased = beforeCheckInCount != null &&
                 afterCheckInCount != null &&
                 afterCheckInCount.toLong() == beforeCheckInCount.toLong() + 1L &&
+                pendingCountKind == "地点" &&
                 pendingCountKind == labels.checkInCountKind()
         val status = when {
+            state.page == PluginPage.OUT_OF_RANGE -> MapOperationStatus.FAILED
             checkInCountIncreased -> MapOperationStatus.SUCCESS
-            state.page == PluginPage.SUCCESS -> MapOperationStatus.SUCCESS
+            state.page == PluginPage.SUCCESS -> MapOperationStatus.UNKNOWN
             state.page == PluginPage.ALREADY_COMPLETED ->
                 MapOperationStatus.ALREADY_COMPLETED
             state.page == PluginPage.DAILY_QUOTA_EXHAUSTED ->
@@ -217,16 +238,17 @@ class AmapCheckInPlugin : MapAutomationPlugin {
             afterFingerprint = state.fingerprint,
             resultStatus = status,
             message = when {
+                state.page == PluginPage.OUT_OF_RANGE -> state.blockedReason
                 checkInCountIncreased ->
                     "高德地图地点统计已从${beforeCheckInCount}增加到${afterCheckInCount}"
-                status == MapOperationStatus.SUCCESS ->
-                    "高德地图返回明确打卡成功证据"
+                state.page == PluginPage.SUCCESS ->
+                    "高德地图结果卡片待确认，关闭“收下”后继续核对地点统计增长"
                 status == MapOperationStatus.ALREADY_COMPLETED ->
                     "高德地图已标记当前地点完成"
                 status == MapOperationStatus.BLOCKED ->
                     state.blockedReason.ifBlank { "高德地图流程被阻断" }
                 rateLimited ->
-                    "高德地图检测到频率提示，等待地点统计增长或明确成功页"
+                    "高德地图检测到频率提示，等待地点统计增长"
                 else -> "等待高德地图返回确定结果"
             },
             observedAtMillis = window.capturedAtMillis,
@@ -447,7 +469,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         ) "地点" else "角落"
     }
 
-    // 优先读取高德“地点”累计数量，再兼容旧版已打卡和角落文案。
+    // 只读取地点累计数量，分离的统计标题必须紧邻数值，不能借用角落或轨迹数。
     private fun List<String>.extractCheckInCount(): Int? {
         firstNotNullOfOrNull { label ->
             LOCATION_COUNT_INLINE_PATTERN.find(label)?.groupValues
@@ -459,18 +481,14 @@ class AmapCheckInPlugin : MapAutomationPlugin {
                 if (label != marker) {
                     return@forEachIndexed
                 }
-                drop(index + 1).take(4)
-                    .firstNotNullOfOrNull { following ->
-                        following.trim().toIntOrNull()
-                    }?.let { count ->
+                drop(index + 1).firstOrNull { following ->
+                    !following.contains(":id/") && following != marker
+                }?.trim()?.toIntOrNull()?.let { count ->
                         return count.takeIf { it >= 0 }
                     }
             }
         }
-        return firstNotNullOfOrNull { label ->
-            FALLBACK_COUNT_INLINE_PATTERN.find(label)?.groupValues
-                ?.getOrNull(1)?.toIntOrNull()
-        }
+        return null
     }
 
     // 为缺少稳定父节点的快照生成有限高度的候选行键。
@@ -486,7 +504,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
     }
 
     private companion object {
-        const val PROFILE_VERSION = "amap-continuous-v5.2.8"
+        const val PROFILE_VERSION = "amap-continuous-v5.2.10"
         const val CURRENT_LOCATION_HINT = "device-real-location"
         const val ANDROID_CONTENT_VIEW_ID = "android:id/content"
         const val ROOT_VIEW_ID_SUFFIX = ":id/root_view"
@@ -569,9 +587,7 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         val CHECK_IN_COUNT_MARKERS = listOf(
             "已打卡",
             "打卡点",
-            "地点",
-            "已点亮",
-            "角落"
+            "地点"
         )
         val DISTANCE_PATTERN = Regex(
             "(?i)(\\d+(?:\\.\\d+)?\\s*(?:m|米|km|公里))"
@@ -582,9 +598,6 @@ class AmapCheckInPlugin : MapAutomationPlugin {
         val LOCATION_COUNT_INLINE_PATTERN = Regex(
             "(?:已打卡|打卡点|地点)\\D{0,8}(\\d+)\\s*(?:个)?(?:地点|打卡点)?|" +
                     "走过\\s*(\\d+)\\s*个(?:地方|地点)"
-        )
-        val FALLBACK_COUNT_INLINE_PATTERN = Regex(
-            "(?:已点亮|角落)\\D{0,8}(\\d+)\\s*(?:个)?(?:角落)?"
         )
         val AMAP_LATITUDE_PATTERN = Regex("\\d{1,2}(?:\\.\\d+)?°N")
         val AMAP_LONGITUDE_PATTERN = Regex("\\d{1,3}(?:\\.\\d+)?°E")

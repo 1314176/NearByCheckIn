@@ -31,6 +31,48 @@ import com.wu.nearbycheckin.core.model.ProviderTaskStatus
 
 class ProviderAutomationCoordinatorTest {
 
+    // 两地图分别超范围时只撤销自身旧队列，另一地图继续执行，旧地点重新读取后仍可领取。
+    @Test
+    fun rangeFailureInvalidatesOnlyItsProviderWithoutPermanentDeduplication() {
+        MapProvider.entries.forEach { failedProvider ->
+            val fixture = fixture()
+            val otherProvider = MapProvider.entries.first { it != failedProvider }
+            val old = candidate("旧位置地点", false, failedProvider)
+            fixture.coordinator.replaceCandidates(failedProvider, listOf(old,
+                candidate("旧列表排队地点", false, failedProvider)), "old")
+            fixture.coordinator.replaceCandidates(otherProvider,
+                listOf(candidate("另一地图地点", false, otherProvider)), "other")
+            val failedTask = fixture.coordinator.claimNextTask(failedProvider, "failed-worker")!!
+            fixture.coordinator.beginVerification(failedTask.taskId, "failed-command")
+            val other = fixture.coordinator.claimNextTask(otherProvider, "other-worker")!!
+            val before = fixture.repository.currentSnapshot()
+
+            fixture.coordinator.invalidateOutOfRangeCandidates(failedProvider, "已超出打卡范围")
+            val cancelled = fixture.repository.currentSnapshot()
+            assertTrue(cancelled.providerTasks.filter { it.provider == failedProvider }
+                .all { it.status == ProviderTaskStatus.CANCELLED && it.leaseOwner.isBlank() })
+            assertEquals(before.providerTasks.first { it.taskId == other.taskId },
+                cancelled.providerTasks.first { it.taskId == other.taskId })
+            assertTrue(cancelled.providerCandidates.none { it.provider == failedProvider })
+            assertEquals(before.providerCompletedKeys, cancelled.providerCompletedKeys)
+            assertEquals(before.records, cancelled.records)
+            assertEquals(if (otherProvider == MapProvider.BAIDU) before.providerRuntime.baiduState
+                else before.providerRuntime.amapState,
+                if (otherProvider == MapProvider.BAIDU) cancelled.providerRuntime.baiduState
+                else cancelled.providerRuntime.amapState)
+            assertEquals(before.providerRuntime.baiduTotalVerifiedSuccessCount,
+                cancelled.providerRuntime.baiduTotalVerifiedSuccessCount)
+            assertFalse(fixture.coordinator.finishTask(failedTask.taskId,
+                evidence(failedTask.taskId, MapOperationStatus.SUCCESS, failedProvider)))
+
+            fixture.coordinator.replaceCandidates(failedProvider,
+                listOf(old.copy(fingerprint = "fresh-position")), "new")
+            val refreshed = fixture.coordinator.claimNextTask(failedProvider, "new-worker")!!
+            assertTrue(refreshed.taskId != failedTask.taskId)
+            assertEquals("fresh-position", refreshed.candidate.fingerprint)
+        }
+    }
+
     // 暂时失败耗尽三次后冷却恢复，不能要求用户升级插件才能再次尝试。
     @Test
     fun transientFailureResumesAfterBoundedCooldown() {

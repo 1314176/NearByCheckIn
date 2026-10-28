@@ -13,6 +13,7 @@ import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.accessibility.AccessibilityWindowInfo
 
 import com.wu.nearbycheckin.core.model.MapProvider
 
@@ -80,6 +81,14 @@ class AccessibilityGestureTapDispatcher(
         navigationLease.release(provider)
     }
 
+    // 仅在目标地图持有当前焦点时返回，禁止把另一地图的页面意外关闭。
+    fun navigateBackForPackage(packageName: String): Boolean {
+        val focusedPackage = service.windows.orEmpty().firstOrNull { it.isFocused }
+            ?.root?.packageName?.toString()
+        if (!PackageNavigationSafetyPolicy.canNavigateBack(packageName, focusedPackage)) return false
+        return service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+    }
+
     // 将短时点击加入共享队列并确保同一时刻只派发一个手势。
     fun tap(x: Int, y: Int): Boolean {
         return enqueueTap(
@@ -96,14 +105,26 @@ class AccessibilityGestureTapDispatcher(
         x: Int,
         y: Int,
         packageName: String,
-        onCompleted: ((Boolean) -> Unit)? = null
+        onCompleted: ((Boolean) -> Unit)? = null,
+        windowId: Int? = null
     ): Boolean {
         return enqueuePackageTap(
             x = x,
             y = y,
             packageName = packageName,
-            onCompleted = onCompleted
+            onCompleted = onCompleted,
+            windowId = windowId
         )
+    }
+
+    // 上拉面板复用共享手势队列，整段路径必须位于同一地图且避开系统热区。
+    internal fun expandPanelForPackage(packageName: String, windowId: Int, anchor: GestureTapBounds): GestureSwipePath? {
+        val context = packageTouchContext(packageName, windowId) ?: return null
+        val swipe = BaiduPanelSwipePolicy.select(anchor, context.window, context.blockers) ?: return null
+        return swipe.takeIf {
+            enqueueTap(TapRequest(x = swipe.start.x, y = swipe.start.y,
+                endPoint = swipe.end, durationMillis = 550L, packageName = packageName, windowId = windowId))
+        }
     }
 
     // 为目标应用原子提交间隔固定的两次点击，避免主线程阻塞破坏时序。
@@ -129,10 +150,14 @@ class AccessibilityGestureTapDispatcher(
         y: Int,
         packageName: String,
         secondTapDelayMillis: Long = 0L,
-        onCompleted: ((Boolean) -> Unit)? = null
+        onCompleted: ((Boolean) -> Unit)? = null,
+        windowId: Int? = null
     ): Boolean {
-        val bounds = findPackageWindowBounds(packageName) ?: return false
-        if (!bounds.contains(x, y)) return false
+        val context = packageTouchContext(packageName, windowId) ?: return false
+        if (!PackageGestureTargetPolicy.isSafePoint(GestureTapPoint(x, y), context.window, context.blockers)) {
+            return false
+        }
+        val bounds = context.window
         val focusPoint = bounds.let { bounds ->
             PackageGestureFocusPolicy.select(
                 left = bounds.left,
@@ -147,6 +172,7 @@ class AccessibilityGestureTapDispatcher(
                 y = y,
                 durationMillis = PACKAGE_TAP_DURATION_MILLIS,
                 packageName = packageName,
+                windowId = windowId,
                 focusPoint = focusPoint,
                 secondTapStartMillis =
                     PackageGestureTimingPolicy.secondTapStartMillis(
@@ -188,9 +214,10 @@ class AccessibilityGestureTapDispatcher(
             return false
         }
         val tap = pendingTaps.removeFirst()
-        if (tap.packageName.isNotBlank() &&
-            findPackageWindowBounds(tap.packageName)?.contains(tap.x, tap.y) != true
-        ) {
+        val context = if (tap.packageName.isNotBlank()) packageTouchContext(tap.packageName, tap.windowId) else null
+        if (tap.packageName.isNotBlank() && (context == null ||
+            !PackageGestureTargetPolicy.isSafeGesture(GestureTapPoint(tap.x, tap.y), tap.endPoint,
+                context.window, context.blockers))) {
             tap.onCompleted?.invoke(false)
             isDispatching = false
             dispatchNext()
@@ -210,6 +237,7 @@ class AccessibilityGestureTapDispatcher(
                 dispatchPoint.x.toFloat(),
                 dispatchPoint.y.toFloat()
             )
+            if (!isFocusPrimer) tap.endPoint?.let { lineTo(it.x.toFloat(), it.y.toFloat()) }
         }
         val gestureBuilder = GestureDescription.Builder()
             .addStroke(
@@ -306,9 +334,34 @@ class AccessibilityGestureTapDispatcher(
         )
     }
 
+    // 用目标真实窗口减去更高层系统触摸热区，不能只判断点击仍在地图矩形范围内。
+    internal fun selectSafeTapPoint(packageName: String, windowId: Int, target: GestureTapBounds): GestureTapPoint? {
+        val context = packageTouchContext(packageName, windowId) ?: return null
+        return PackageGestureTargetPolicy.select(target, context.window, context.blockers)
+    }
+
+    // 系统窗口边界就是可触摸区域的包围矩形，包含伸入地图内容的分隔线热区。
+    private fun packageTouchContext(packageName: String, windowId: Int?): PackageTouchContext? {
+        val windows = service.windows.orEmpty()
+        val target = windows.firstOrNull { window ->
+            (windowId == null || window.id == windowId) && window.root?.packageName?.toString() == packageName
+        } ?: return null
+        val bounds = findPackageWindowBounds(packageName, target.id) ?: return null
+        val blockers = windows.filter { window ->
+            window.layer > target.layer && window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY
+        }.map { window ->
+            val rect = Rect().also(window::getBoundsInScreen)
+            GestureTapBounds(rect.left, rect.top, rect.right, rect.bottom)
+        }.filter { it.right > it.left && it.bottom > it.top }
+        return PackageTouchContext(GestureTapBounds(bounds.left, bounds.top, bounds.right, bounds.bottom), blockers)
+    }
+
+    private data class PackageTouchContext(val window: GestureTapBounds, val blockers: List<GestureTapBounds>)
+
     // 使用系统窗口与根节点的交集校验目标，避免分屏重排后使用旧边界。
-    private fun findPackageWindowBounds(packageName: String): Rect? {
+    private fun findPackageWindowBounds(packageName: String, windowId: Int? = null): Rect? {
         service.windows.orEmpty().forEach { window ->
+            if (windowId != null && window.id != windowId) return@forEach
             val rootNode = window.root ?: return@forEach
             if (rootNode.packageName?.toString() != packageName) {
                 return@forEach
@@ -329,6 +382,8 @@ class AccessibilityGestureTapDispatcher(
         val y: Int,
         val durationMillis: Long,
         val packageName: String = "",
+        val windowId: Int? = null,
+        val endPoint: GestureTapPoint? = null,
         val focusPoint: GestureTapPoint? = null,
         val secondTapStartMillis: Long = 0L,
         val focusPrimed: Boolean = false,
@@ -445,6 +500,88 @@ internal object PackageGestureFocusPolicy {
         bottom: Int
     ): GestureTapPoint? {
         return null
+    }
+}
+
+internal data class GestureTapBounds(val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+internal data class GestureSwipePath(val start: GestureTapPoint, val end: GestureTapPoint)
+
+internal object BaiduPanelSwipePolicy {
+
+    // 从统计标题的安全可触摸区域上拉，所有坐标随当前窗格变化，不使用固定屏幕位置。
+    fun select(anchor: GestureTapBounds, window: GestureTapBounds, blockers: List<GestureTapBounds>): GestureSwipePath? {
+        val start = PackageGestureTargetPolicy.select(anchor, window, blockers) ?: return null
+        val height = window.bottom - window.top
+        val endY = maxOf(window.top + height / 10,
+            minOf(window.top + height * 35 / 100, start.y - height * 40 / 100))
+        val end = GestureTapPoint(start.x, endY)
+        if (start.y - end.y < height / 5 || height < 200) return null
+        return GestureSwipePath(start, end).takeIf {
+            PackageGestureTargetPolicy.isSafeGesture(start, end, window, blockers)
+        }
+    }
+}
+
+internal object PackageGestureTargetPolicy {
+
+    // 不只检查两个端点，竖直拖动的整段路径都不能穿过分屏控件、键盘或其他覆盖窗口。
+    fun isSafeGesture(start: GestureTapPoint, end: GestureTapPoint?, window: GestureTapBounds,
+                      blockers: List<GestureTapBounds>): Boolean {
+        if (!isSafePoint(start, window, blockers)) return false
+        if (end == null) return true
+        if (start.x != end.x || !isSafePoint(end, window, blockers)) return false
+        val top = minOf(start.y, end.y)
+        val bottom = maxOf(start.y, end.y)
+        return blockers.none { start.x >= it.left && start.x < it.right && bottom >= it.top && top < it.bottom }
+    }
+
+    // 从按钮与窗口交集中扣除系统遮挡，选择面积最大的剩余矩形中心，不硬编码机型坐标。
+    fun select(target: GestureTapBounds, window: GestureTapBounds, blockers: List<GestureTapBounds>): GestureTapPoint? {
+        val clipped = intersection(target, window) ?: return null
+        var regions = listOf(clipped)
+        for (blocker in blockers) {
+            regions = regions.flatMap { region -> subtract(region, blocker) }
+        }
+        val selected = regions.filter { it.right - it.left >= 4 && it.bottom - it.top >= 4 }
+            .maxByOrNull { (it.right - it.left).toLong() * (it.bottom - it.top) } ?: return null
+        return GestureTapPoint(selected.left + (selected.right - selected.left) / 2,
+            selected.top + (selected.bottom - selected.top) / 2)
+    }
+
+    // 派发前再次检查动态窗口和遮挡，位置变化后拒绝沿用旧点击点。
+    fun isSafePoint(point: GestureTapPoint, window: GestureTapBounds, blockers: List<GestureTapBounds>): Boolean {
+        return contains(window, point) && blockers.none { contains(it, point) }
+    }
+
+    // 使用左闭右开坐标检查点是否属于系统热区或目标窗口。
+    private fun contains(bounds: GestureTapBounds, point: GestureTapPoint): Boolean {
+        return point.x >= bounds.left && point.x < bounds.right && point.y >= bounds.top && point.y < bounds.bottom
+    }
+
+    // 求有效矩形交集，忽略窗口外或负面积区域。
+    private fun intersection(first: GestureTapBounds, second: GestureTapBounds): GestureTapBounds? {
+        val result = GestureTapBounds(maxOf(first.left, second.left), maxOf(first.top, second.top),
+            minOf(first.right, second.right), minOf(first.bottom, second.bottom))
+        return result.takeIf { it.right > it.left && it.bottom > it.top }
+    }
+
+    // 将被系统遮挡的矩形拆成互不重叠的上下左右剩余区域。
+    private fun subtract(region: GestureTapBounds, blocker: GestureTapBounds): List<GestureTapBounds> {
+        val covered = intersection(region, blocker) ?: return listOf(region)
+        return listOf(GestureTapBounds(region.left, region.top, region.right, covered.top),
+            GestureTapBounds(region.left, covered.bottom, region.right, region.bottom),
+            GestureTapBounds(region.left, covered.top, covered.left, covered.bottom),
+            GestureTapBounds(covered.right, covered.top, region.right, covered.bottom))
+            .filter { it.right > it.left && it.bottom > it.top }
+    }
+}
+
+internal object PackageNavigationSafetyPolicy {
+
+    // 未知焦点或焦点属于另一应用时拒绝全局返回。
+    fun canNavigateBack(targetPackage: String, focusedPackage: String?): Boolean {
+        return targetPackage.isNotBlank() && targetPackage == focusedPackage
     }
 }
 

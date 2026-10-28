@@ -26,6 +26,36 @@ class AmapCheckInPluginTest {
 
     private val plugin = AmapCheckInPlugin()
 
+    // 高速离开地点后立即进入范围恢复，确认按钮固定为真实节点，不能把背景增长算成功。
+    @Test
+    fun recoversOutOfRangeInsteadOfWaitingForSuccess() {
+        plugin.inspect(window(node("地点 220个"), node("开始打卡")))
+        plugin.buildSelectAction(currentLocationCandidate())
+        val rejected = window(node("该地点已超过可打卡范围"), node("确定", fingerprint = "range-ok"),
+            node("地点 221个"))
+        val state = plugin.inspect(rejected)
+        assertEquals(PluginPage.OUT_OF_RANGE, state.page)
+        assertEquals(PluginCommandType.DISMISS_RESULT, plugin.buildNextAction(state)?.type)
+        assertEquals("range-ok", plugin.buildNextAction(state)?.target?.nodeFingerprint)
+        assertEquals(MapOperationStatus.FAILED, plugin.verifyResult(rejected).resultStatus)
+        assertEquals(PluginCommandType.NAVIGATE_BACK, plugin.buildNextAction(plugin.inspect(
+            window(node("距离打卡地点太远"))))?.type)
+    }
+
+    // 验证足迹入口只提交当前位置按钮，不把历史打卡时间和旧地址当作附近候选。
+    @Test
+    fun ignoresHistoryRowsOnCheckInEntry() {
+        val candidates = plugin.readCandidates(window(
+            node("地点"), node("502"), node("个"),
+            node("10月26日 00:04", parent = "history"),
+            node("阳城路333号", parent = "history"),
+            node("当前位置："), node("我的位置"), node("打卡", fingerprint = "start")
+        ))
+        assertEquals(1, candidates.size)
+        assertEquals("当前高德打卡位置", candidates.single().name)
+        assertEquals("start", candidates.single().fingerprint)
+    }
+
     // 页面切到角落统计或数量跨越多个地点时，不能冒充本次单地点成功。
     @Test
     fun rejectsCounterScopeChangeAndLargeJump() {
@@ -272,7 +302,7 @@ class AmapCheckInPluginTest {
         assertTrue(candidate.completed)
     }
 
-    // 验证高德明确成功结果页生成最终成功证据。
+    // 验证仅出现成功卡片不能确认地点新增，必须继续等待统计数量。
     @Test
     fun verifiesExplicitSuccessPage() {
         val candidate = currentLocationCandidate()
@@ -288,8 +318,52 @@ class AmapCheckInPluginTest {
             )
         )
 
-        assertEquals(MapOperationStatus.SUCCESS, evidence.resultStatus)
+        assertEquals(MapOperationStatus.UNKNOWN, evidence.resultStatus)
         assertEquals(PluginPage.SUCCESS.name, evidence.page)
+    }
+
+    // 验证数量未变的成功卡片关闭后仍沿用首次打卡基准，新增一个地点才成功。
+    @Test
+    fun waitsForCountIncreaseAfterDismissingSuccessCard() {
+        plugin.inspect(window(node("地点 220个"), node("开始打卡")))
+        val command = plugin.buildSelectAction(currentLocationCandidate())
+        val card = window(node("地点 220个"), node("打卡成功"), node("收下"))
+        val waiting = plugin.verifyResult(card)
+        assertEquals(MapOperationStatus.UNKNOWN, waiting.resultStatus)
+        assertEquals(PluginCommandType.DISMISS_RESULT,
+            plugin.buildNextAction(plugin.inspect(card))?.type)
+        val confirmed = plugin.verifyResult(window(node("地点 221个"), node("开始打卡")))
+        assertEquals(MapOperationStatus.SUCCESS, confirmed.resultStatus)
+        assertEquals(220, confirmed.beforeCheckInCount)
+        assertEquals(221, confirmed.afterCheckInCount)
+        assertEquals(command.commandId, confirmed.commandId)
+    }
+
+    // 验证没有首次打卡数量基准时不能凭当前数量和成功卡片确认新增。
+    @Test
+    fun rejectsSuccessCardWithCountButWithoutBaseline() {
+        plugin.buildSelectAction(currentLocationCandidate())
+        assertEquals(MapOperationStatus.UNKNOWN, plugin.verifyResult(window(
+            node("地点 221个"), node("打卡成功"), node("收下")
+        )).resultStatus)
+    }
+
+    // 验证角落数量增加不是地点新增，缺失地点数时也不得借用角落数。
+    @Test
+    fun rejectsCornerCountIncreaseAndMissingPlaceCount() {
+        plugin.inspect(window(node("已点亮 220 个角落"), node("开始打卡")))
+        plugin.buildSelectAction(currentLocationCandidate())
+        assertEquals(MapOperationStatus.UNKNOWN, plugin.verifyResult(window(
+            node("已点亮 221 个角落"), node("开始打卡")
+        )).resultStatus)
+
+        plugin.inspect(window(node("地点 220个"), node("开始打卡")))
+        plugin.buildSelectAction(currentLocationCandidate())
+        val missing = plugin.verifyResult(window(
+            node("地点"), node("角落"), node("221"), node("个"), node("开始打卡")
+        ))
+        assertEquals(MapOperationStatus.UNKNOWN, missing.resultStatus)
+        assertEquals(null, missing.afterCheckInCount)
     }
 
     // 验证高德成功页优先生成自动点击“收下”的关闭命令。

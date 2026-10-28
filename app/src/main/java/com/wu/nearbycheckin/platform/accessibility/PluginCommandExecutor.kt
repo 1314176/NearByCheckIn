@@ -78,6 +78,8 @@ class PluginCommandExecutor(
                 PluginCommandExecutionResult(false, "插件报告流程阻断")
             PluginCommandType.SCROLL_CANDIDATES ->
                 scrollFirst(rootNode)
+            PluginCommandType.EXPAND_CHECK_IN_PANEL ->
+                expandBaiduPanel(rootNode, packageName, command, forceGesture)
             else -> clickTarget(
                 rootNode,
                 packageName,
@@ -120,33 +122,54 @@ class PluginCommandExecutor(
             nodeLabels = { it.node.labels() }
         )
         if (target == null) {
+            if (command.type == PluginCommandType.NAVIGATE_BACK) {
+                val success = gestureDispatcher.navigateBackForPackage(packageName)
+                return PluginCommandExecutionResult(success,
+                    if (success) "已向当前焦点地图提交返回" else "目标地图不持有焦点，等待安全返回")
+            }
             return PluginCommandExecutionResult(
                 false,
                 "未找到目标：${command.target.labels.joinToString("/")}"
             )
         }
-        val bounds = Rect().also(target.node::getBoundsInScreen)
+        val targetBounds = Rect().also(target.node::getBoundsInScreen)
+        val executable = findClickableAncestor(target.node)
+        val actionTarget = if (command.type == PluginCommandType.DISMISS_RESULT) {
+            executable?.takeIf { ancestor ->
+                val ancestorBounds = Rect().also(ancestor::getBoundsInScreen)
+                PluginCommandTargetBoundsPolicy.isDismissButtonAncestor(
+                    targetHeight = targetBounds.height(),
+                    ancestorHeight = ancestorBounds.height(),
+                    windowHeight = rootBounds.height()
+                )
+            } ?: target.node
+        } else {
+            target.node
+        }
+        val bounds = Rect().also(actionTarget::getBoundsInScreen)
         if (bounds.width() <= 0 || bounds.height() <= 0) {
             return PluginCommandExecutionResult(false, "目标节点边界无效")
         }
-        val visiblePoint = PluginCommandTargetBoundsPolicy.selectVisiblePoint(
-            targetLeft = bounds.left,
-            targetTop = bounds.top,
-            targetRight = bounds.right,
-            targetBottom = bounds.bottom,
-            windowLeft = rootBounds.left,
-            windowTop = rootBounds.top,
-            windowRight = rootBounds.right,
-            windowBottom = rootBounds.bottom
-        ) ?: return PluginCommandExecutionResult(
-            false,
-            "目标节点不在当前窗口可见区域"
-        )
-        // 结果确认优先点击按钮本身，避免聚焦手势碰到弹层内容；无变化时再改用手势。
+        val visiblePoint = gestureDispatcher.selectSafeTapPoint(packageName, rootNode.windowId,
+            GestureTapBounds(bounds.left, bounds.top, bounds.right, bounds.bottom))
+        if (visiblePoint == null) {
+            if (command.type == PluginCommandType.DISMISS_RESULT) {
+                if (!forceGesture && (actionTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK) ||
+                    actionTarget.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id))) {
+                    return PluginCommandExecutionResult(true, "确认按钮被系统遮挡，已请求节点确认或移入可见区")
+                }
+                if (gestureDispatcher.navigateBackForPackage(packageName)) {
+                    return PluginCommandExecutionResult(true, "确认按钮被系统完全遮挡，已安全返回目标地图")
+                }
+            }
+            return PluginCommandExecutionResult(false, "目标按钮没有避开系统触摸热区的安全点击位置")
+        }
+        // 高德直接使用已避开系统热区的真实手势，避免节点点击返回假成功。
         if (!forceGesture && command.type == PluginCommandType.DISMISS_RESULT &&
-            target.node.isEnabled && target.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            !PluginCommandGesturePolicy.shouldPreferGesture(command.provider, command.type) &&
+            actionTarget.isEnabled && actionTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         ) {
-            return PluginCommandExecutionResult(true, "已提交结果确认节点点击")
+            return PluginCommandExecutionResult(true, "已提交结果确认节点点击，区域=${bounds.toShortString()}")
         }
         if (
             forceGesture || PluginCommandGesturePolicy.shouldPreferGesture(
@@ -158,10 +181,10 @@ class PluginCommandExecutor(
                 visiblePoint,
                 packageName,
                 command,
-                onDeferredRepeatFirstTapCompleted
+                onDeferredRepeatFirstTapCompleted,
+                rootNode.windowId
             )
         }
-        val executable = findClickableAncestor(target.node)
         if (executable != null && executable.performAction(
                 AccessibilityNodeInfo.ACTION_CLICK
             )
@@ -172,7 +195,8 @@ class PluginCommandExecutor(
             visiblePoint,
             packageName,
             command,
-            onDeferredRepeatFirstTapCompleted
+            onDeferredRepeatFirstTapCompleted,
+            rootNode.windowId
         )
     }
 
@@ -181,7 +205,8 @@ class PluginCommandExecutor(
         point: GestureTapPoint,
         packageName: String,
         command: PluginCommand,
-        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?
+        onDeferredRepeatFirstTapCompleted: ((Boolean) -> Unit)?,
+        windowId: Int
     ): PluginCommandExecutionResult {
         val deferredRepeat = PluginCommandGesturePolicy.shouldUseDeferredRepeat(
             provider = command.provider,
@@ -193,7 +218,8 @@ class PluginCommandExecutor(
             y = point.y,
             packageName = packageName,
             onCompleted = onDeferredRepeatFirstTapCompleted
-                .takeIf { deferredRepeat }
+                .takeIf { deferredRepeat },
+            windowId = windowId
         )
         return PluginCommandExecutionResult(
             accepted,
@@ -201,13 +227,47 @@ class PluginCommandExecutor(
                 if (deferredRepeat) {
                     "已提交高德首次打卡手势"
                 } else {
-                    "已提交共享仲裁手势"
+                    "已提交共享仲裁手势，坐标=(${point.x},${point.y})"
                 }
             } else {
                 "系统拒绝手势"
             },
             deferredRepeatSubmitted = accepted && deferredRepeat
         )
+    }
+
+    // 只展开百度打卡统计面板，普通滚动不可用或无效时提交窗格内的安全上拉。
+    private fun expandBaiduPanel(
+        rootNode: AccessibilityNodeInfo,
+        packageName: String,
+        command: PluginCommand,
+        forceGesture: Boolean
+    ): PluginCommandExecutionResult {
+        if (command.provider != MapProvider.BAIDU) {
+            return PluginCommandExecutionResult(false, "面板展开命令仅适用于百度地图")
+        }
+        val nodes = mutableListOf<NodeWithFingerprint>()
+        collectNodes(rootNode, "0", nodes)
+        val anchor = PluginCommandTargetPolicy.select(nodes, command.target,
+            fingerprint = { it.fingerprint }, viewId = { it.node.viewIdResourceName.orEmpty() },
+            nodeLabels = { it.node.labels() })?.node
+            ?: return PluginCommandExecutionResult(false, "百度打卡统计标题已变化，等待重新读取")
+        if (!forceGesture) {
+            var ancestor: AccessibilityNodeInfo? = anchor
+            repeat(MAX_ANCESTOR_DEPTH) {
+                val current = ancestor ?: return@repeat
+                if (current.isScrollable && current.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                    return PluginCommandExecutionResult(true, "已请求滚动百度打卡面板，等待真实按钮露出")
+                }
+                ancestor = current.parent
+            }
+        }
+        val bounds = Rect().also(anchor::getBoundsInScreen)
+        val swipe = gestureDispatcher.expandPanelForPackage(packageName, rootNode.windowId,
+            GestureTapBounds(bounds.left, bounds.top, bounds.right, bounds.bottom))
+            ?: return PluginCommandExecutionResult(false, "百度打卡面板没有安全上拉路径，等待重新进入")
+        return PluginCommandExecutionResult(true,
+            "已提交百度面板上拉手势：(${swipe.start.x},${swipe.start.y})->(${swipe.end.x},${swipe.end.y})")
     }
 
     // 对首个可滚动节点执行有限向前滚动。
@@ -298,6 +358,16 @@ class PluginCommandExecutor(
 }
 
 internal object PluginCommandTargetBoundsPolicy {
+
+    // 仅使用文字附近的小型按钮容器，禁止把整张结果卡片或全屏遮罩当作确认按钮。
+    fun isDismissButtonAncestor(
+        targetHeight: Int,
+        ancestorHeight: Int,
+        windowHeight: Int
+    ): Boolean {
+        return targetHeight > 0 && ancestorHeight >= targetHeight &&
+                ancestorHeight <= maxOf(targetHeight * 4, windowHeight / 8)
+    }
 
     // 返回目标与当前窗口可见交集的中心点，避免分屏裁切后点击落入另一地图。
     fun selectVisiblePoint(

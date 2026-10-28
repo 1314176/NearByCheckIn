@@ -47,7 +47,7 @@ object AmapCheckInFollowUpPolicy {
         }
     }
 
-    // 第二次点击后的真实频率提示仅用于诊断，最终成功仍需数量增长或明确成功页。
+    // 第二次点击后的真实频率提示仅用于诊断，最终成功必须等待地点数量增长。
     fun resolveProviderEvidence(
         evidence: MapOperationEvidence,
         secondClickSubmitted: Boolean,

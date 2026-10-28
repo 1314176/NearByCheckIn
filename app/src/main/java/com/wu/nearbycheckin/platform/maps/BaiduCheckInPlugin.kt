@@ -10,6 +10,7 @@ package com.wu.nearbycheckin.platform.maps
 import java.util.UUID
 
 import com.wu.nearbycheckin.core.domain.plugin.MapAutomationPlugin
+import com.wu.nearbycheckin.core.domain.plugin.CheckInRangeEvidencePolicy
 import com.wu.nearbycheckin.core.domain.plugin.MapWindowSnapshot
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommand
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget
@@ -44,6 +45,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
         val page = when {
             isDailyQuotaEvidence(joined) ->
                 PluginPage.DAILY_QUOTA_EXHAUSTED
+            labels.any(CheckInRangeEvidencePolicy::matches) -> PluginPage.OUT_OF_RANGE
             labels.any { label -> BLOCKED_LABELS.any(label::contains) } ->
                 PluginPage.BLOCKED
             labels.any { label -> label.contains(SHARE_PANEL_LABEL) } ->
@@ -83,14 +85,18 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
             fingerprint = window.fingerprint(),
             evidence = joined.take(MAX_EVIDENCE_LENGTH),
             navigationTarget = when (page) {
+                PluginPage.OUT_OF_RANGE -> CheckInRangeEvidencePolicy.dismissTarget(visibleNodes)
                 PluginPage.CHECK_IN_ENTRY -> visibleNodes.firstOrNull { node ->
                     node.labels().any(::isCheckInActionLabel)
                 }?.toNavigationTarget()
-                PluginPage.FOOTPRINT -> visibleNodes.findCheckInTab()
-                    ?.toNavigationTarget()
+                PluginPage.FOOTPRINT -> (visibleNodes.firstOrNull { node ->
+                    node.labels().any { label -> label == CHECK_IN_SUMMARY_MARKER ||
+                            label.contains(CHECK_IN_SUMMARY_MARKER) && label.contains(CHECK_IN_COUNT_UNIT) }
+                } ?: visibleNodes.findCheckInTab())?.toNavigationTarget()
                 else -> null
             },
             blockedReason = when (page) {
+                PluginPage.OUT_OF_RANGE -> labels.firstOrNull(CheckInRangeEvidencePolicy::matches).orEmpty()
                 PluginPage.DAILY_QUOTA_EXHAUSTED ->
                     DAILY_QUOTA_LABELS.firstOrNull(joined::contains)
                         ?: DAILY_QUOTA_MESSAGE
@@ -120,15 +126,25 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
 
     // 根据当前页面生成下一条确定性导航命令。
     override fun buildNextAction(state: PluginPageState): PluginCommand? {
-        // 统计卡片已出现代表已在打卡页，向上滚动内容以露出当前位置按钮。
+        if (state.page == PluginPage.OUT_OF_RANGE) {
+            val target = state.navigationTarget
+            return newCommand(
+                type = if (target != null) PluginCommandType.DISMISS_RESULT else PluginCommandType.NAVIGATE_BACK,
+                labels = target?.labels ?: listOf("返回", "返回上一页"),
+                viewId = if (target == null) BACK_VIEW_ID else "",
+                evidenceHint = state.blockedReason
+            ).let { command -> target?.let { command.copy(target = it) } ?: command }
+        }
+        // 统计卡片已出现但真实按钮未露出时展开打卡面板，不误点相机模板或反复滚动旧列表。
         if (state.page == PluginPage.FOOTPRINT &&
             state.evidence.contains(CHECK_IN_SUMMARY_MARKER) &&
             state.evidence.contains(CHECK_IN_COUNT_UNIT)
         ) {
             return newCommand(
-                type = PluginCommandType.SCROLL_CANDIDATES,
-                labels = emptyList(),
-                evidenceHint = "打卡当前位置入口未露出，滚动打卡面板"
+                type = PluginCommandType.EXPAND_CHECK_IN_PANEL,
+                labels = listOf(CHECK_IN_SUMMARY_MARKER),
+                nodeFingerprint = state.navigationTarget?.nodeFingerprint.orEmpty(),
+                evidenceHint = "打卡当前位置入口未露出，上拉展开打卡面板"
             )
         }
         if (state.page == PluginPage.FOOTPRINT && state.navigationTarget == null) {
@@ -154,6 +170,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
                 PluginCommandType.DISMISS_RESULT to emptyList()
             PluginPage.RECOVERY ->
                 PluginCommandType.NAVIGATE_BACK to listOf("返回")
+            PluginPage.OUT_OF_RANGE -> return null
             PluginPage.DAILY_QUOTA_EXHAUSTED,
             PluginPage.BLOCKED ->
                 PluginCommandType.BLOCK to emptyList()
@@ -226,6 +243,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
                     afterCheckInCount != null &&
                     afterCheckInCount.toLong() == beforeCheckInCount.toLong() + 1L
         val status = when {
+            state.page == PluginPage.OUT_OF_RANGE -> MapOperationStatus.FAILED
             checkInCountIncreased -> MapOperationStatus.SUCCESS
             // 数量可能在关闭弹层后才刷新，未增长不能永久标记此地点已经完成。
             state.page == PluginPage.SUCCESS -> MapOperationStatus.UNKNOWN
@@ -248,6 +266,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
             afterFingerprint = state.fingerprint,
             resultStatus = status,
             message = when (status) {
+                MapOperationStatus.FAILED -> state.blockedReason.ifBlank { "百度地图地点操作失败" }
                 MapOperationStatus.SUCCESS ->
                     "百度地图地点统计已从${beforeCheckInCount}增加到${afterCheckInCount}"
                 MapOperationStatus.ALREADY_COMPLETED ->
@@ -407,7 +426,7 @@ class BaiduCheckInPlugin : MapAutomationPlugin {
     }
 
     private companion object {
-        const val PROFILE_VERSION = "baidu-continuous-v5.2.8"
+        const val PROFILE_VERSION = "baidu-continuous-v5.2.10"
         const val MAX_EVIDENCE_LENGTH = 1_000
         const val ROW_BUCKET_HEIGHT = 120
         const val MIN_NAME_LENGTH = 2

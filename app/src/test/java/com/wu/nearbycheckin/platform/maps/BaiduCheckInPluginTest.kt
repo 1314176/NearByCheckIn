@@ -26,6 +26,21 @@ class BaiduCheckInPluginTest {
 
     private val plugin = BaiduCheckInPlugin()
 
+    // 百度超范围提示同样关闭并重选位置，不能被已有成功文字或累计数量掩盖。
+    @Test
+    fun recoversOutOfRangeWithoutReportingSuccess() {
+        val rejected = window(node("当前位置不在打卡范围内"),
+            PluginNodeSnapshot(text = "知道了", right = 200, bottom = 80,
+                fingerprint = "range-close"), node("打卡成功"))
+        val state = plugin.inspect(rejected)
+        assertEquals(PluginPage.OUT_OF_RANGE, state.page)
+        assertEquals(PluginCommandType.DISMISS_RESULT, plugin.buildNextAction(state)?.type)
+        assertEquals("range-close", plugin.buildNextAction(state)?.target?.nodeFingerprint)
+        assertEquals(MapOperationStatus.FAILED, plugin.verifyResult(rejected).resultStatus)
+        assertEquals(PluginCommandType.NAVIGATE_BACK,
+            plugin.buildNextAction(plugin.inspect(window(node("已超出打卡距离"))))?.type)
+    }
+
     // 验证当前地点的明确完成提示仍可关闭，不受累计统计防误判影响。
     @Test
     fun recognizesExplicitCompletedPlace() {
@@ -292,15 +307,43 @@ class BaiduCheckInPluginTest {
         assertEquals(PluginCommandType.NAVIGATE_BACK, plugin.buildNextAction(state)?.type)
     }
 
-    // 验证分屏裁切隐藏当前位置按钮时滚动面板，不重复打开模板入口。
+    // 验证分屏裁切隐藏当前位置按钮时专门展开面板，不重复打开模板入口。
     @Test
     fun scrollsToRevealCurrentPlaceButtonWhenSummaryIsVisible() {
         val state = plugin.inspect(window(
             node("角落"), node("轨迹"), node("打卡"),
             node("已打卡"), node("3123"), node("个地点")
         ))
-        assertEquals(PluginCommandType.SCROLL_CANDIDATES,
+        assertEquals(PluginCommandType.EXPAND_CHECK_IN_PANEL,
             plugin.buildNextAction(state)?.type)
+    }
+
+    // 真机收起面板时绑定统计标题，上拉后必须改点真实按钮而不是模板打卡或再次拖动。
+    @Test
+    fun expandsCollapsedPanelThenSelectsActualImmediateCheckIn() {
+        val viewport = PluginNodeSnapshot(viewId = "android:id/content", top = 1212,
+            right = 1080, bottom = 2358)
+        val collapsed = plugin.inspect(window(viewport,
+            node("角落", top = 2110), node("轨迹", top = 2110), node("打卡", top = 2110),
+            node("已打卡", top = 2250, fingerprint = "panel-header"),
+            node("3139", top = 2250), node("个地点", top = 2250),
+            node("立即打卡", top = 2400, fingerprint = "hidden-button")
+        ))
+        val expand = plugin.buildNextAction(collapsed)
+        assertEquals(PluginCommandType.EXPAND_CHECK_IN_PANEL, expand?.type)
+        assertEquals("panel-header", expand?.target?.nodeFingerprint)
+
+        val expanded = plugin.inspect(window(viewport,
+            node("已打卡", top = 1728), node("3139", top = 1728), node("个地点", top = 1728),
+            node("打卡当前位置：", top = 2039),
+            node("立即打卡", top = 2041, fingerprint = "real-button"),
+            node("打卡", top = 1918, viewId = "com.baidu.BaiduMap:id/tv_entry")
+        ))
+        assertEquals(PluginPage.CHECK_IN_ENTRY, expanded.page)
+        assertEquals(PluginCommandType.OPEN_CHECK_IN_ENTRY, plugin.buildNextAction(expanded)?.type)
+        assertEquals("real-button", plugin.buildNextAction(expanded)?.target?.nodeFingerprint)
+        val list = plugin.inspect(window(node("选择打卡地点"), node("已打卡"), node("3139"), node("个地点")))
+        assertEquals(PluginCommandType.READ_CANDIDATES, plugin.buildNextAction(list)?.type)
     }
 
     // 验证“点亮更多地点”不会再次被当成自动打卡入口。
@@ -405,14 +448,20 @@ class BaiduCheckInPluginTest {
         )
     }
 
-    // 创建候选测试节点。
+    // 创建带可见坐标的候选或面板测试节点。
     private fun node(
         text: String,
         parent: String = "root",
-        fingerprint: String = text
+        fingerprint: String = text,
+        top: Int = 0,
+        viewId: String = ""
     ): PluginNodeSnapshot {
         return PluginNodeSnapshot(
             text = text,
+            viewId = viewId,
+            top = top,
+            right = 100,
+            bottom = top + 40,
             clickable = fingerprint == "place",
             parentFingerprint = parent,
             fingerprint = fingerprint

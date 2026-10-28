@@ -80,6 +80,7 @@ enum class PluginPage {
     DAILY_QUOTA_EXHAUSTED,
     SHARE_PANEL,
     RECOVERY,
+    OUT_OF_RANGE,
     BLOCKED,
     UNKNOWN
 }

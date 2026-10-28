@@ -9,6 +9,7 @@ package com.wu.nearbycheckin.platform.accessibility
 
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandType
+import com.wu.nearbycheckin.core.domain.plugin.PluginPage
 import com.wu.nearbycheckin.core.model.MapProvider
 
 import org.junit.Assert.assertEquals
@@ -18,6 +19,134 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AccessibilityGestureTapDispatcherTest {
+
+    // 真机下半屏统计标题可安全上拉，整段轨迹不接触分隔线、窗格标题和系统底栏。
+    @Test
+    fun expandsBaiduBottomPanelInsideItsOwnWindow() {
+        val window = GestureTapBounds(0, 1212, 1080, 2399)
+        val blockers = listOf(GestureTapBounds(381, 1151, 696, 1246),
+            GestureTapBounds(515, 1284, 564, 1295), GestureTapBounds(0, 2334, 1080, 2400))
+        val swipe = BaiduPanelSwipePolicy.select(GestureTapBounds(58, 2250, 178, 2304), window, blockers)!!
+        assertEquals(GestureTapPoint(118, 2277), swipe.start)
+        assertTrue(swipe.end.y < swipe.start.y)
+        assertTrue(swipe.end.y >= window.top)
+        assertTrue(PackageGestureTargetPolicy.isSafeGesture(swipe.start, swipe.end, window, blockers))
+    }
+
+    // 同样的面板位于上半屏时按当前窗格计算轨迹，不沿用下半屏固定坐标。
+    @Test
+    fun panelSwipeAdaptsToTopWindowAndRejectsHiddenAnchors() {
+        val window = GestureTapBounds(0, 0, 1080, 1188)
+        val swipe = BaiduPanelSwipePolicy.select(GestureTapBounds(58, 750, 178, 804), window, emptyList())!!
+        assertEquals(118, swipe.start.x)
+        assertTrue(swipe.end.y in 0 until swipe.start.y)
+        assertNull(BaiduPanelSwipePolicy.select(GestureTapBounds(58, 1250, 178, 1304), window, emptyList()))
+        assertNull(BaiduPanelSwipePolicy.select(GestureTapBounds(58, 50, 178, 80),
+            GestureTapBounds(0, 0, 1080, 100), emptyList()))
+    }
+
+    // 两端都在地图内也不能允许上拉途中穿过系统控件，窗口重排后必须拒绝旧轨迹。
+    @Test
+    fun rejectsSwipeCrossingSystemRegionOrOldWindow() {
+        val window = GestureTapBounds(0, 1212, 1080, 2399)
+        assertNull(BaiduPanelSwipePolicy.select(GestureTapBounds(58, 2250, 178, 2304), window,
+            listOf(GestureTapBounds(100, 1800, 150, 1860))))
+        assertFalse(PackageGestureTargetPolicy.isSafeGesture(GestureTapPoint(118, 2277),
+            GestureTapPoint(118, 1627), GestureTapBounds(0, 0, 1080, 1188), emptyList()))
+    }
+
+    // 面板文案变化不能冒充展开成功，两次无效后应改为重进入口，露出按钮后才结束等待。
+    @Test
+    fun retriesPanelExpansionTwiceThenReentersInsteadOfLoopingScroll() {
+        val policy = BaiduPanelRecoveryPolicy()
+        policy.recordFailure()
+        assertFalse(policy.needsReentry)
+        policy.recordFailure()
+        assertTrue(policy.needsReentry)
+        assertFalse(NavigationSettlementPolicy.hasSettled(PluginCommandType.EXPAND_CHECK_IN_PANEL,
+            PluginPage.FOOTPRINT, PluginPage.FOOTPRINT, true))
+        assertFalse(NavigationSettlementPolicy.hasSettled(PluginCommandType.EXPAND_CHECK_IN_PANEL,
+            PluginPage.FOOTPRINT, PluginPage.UNKNOWN, true))
+        assertTrue(NavigationSettlementPolicy.hasSettled(PluginCommandType.EXPAND_CHECK_IN_PANEL,
+            PluginPage.FOOTPRINT, PluginPage.CHECK_IN_ENTRY, true))
+        policy.reset()
+        assertFalse(policy.needsReentry)
+    }
+
+    // 真机分隔线热区伸入按钮中央，必须选择按钮剩余侧边而不是此前误用的几何中心。
+    @Test
+    fun dismissTapAvoidsRealSplitDividerTouchableRegion() {
+        val target = GestureTapBounds(277, 1146, 802, 1188)
+        val window = GestureTapBounds(0, 0, 1080, 1188)
+        val divider = listOf(GestureTapBounds(381, 1151, 696, 1246))
+        val point = PackageGestureTargetPolicy.select(target, window, divider)
+        assertEquals(GestureTapPoint(749, 1169), point)
+        assertFalse(PackageGestureTargetPolicy.isSafePoint(GestureTapPoint(539, 1167), window, divider))
+        assertTrue(PackageGestureTargetPolicy.isSafePoint(point!!, window, divider))
+    }
+
+    // 高德位于下半屏且按钮全部压在导航热区时不得向系统底栏注入点击。
+    @Test
+    fun refusesDismissGestureFullyCoveredByNavigationBar() {
+        assertNull(PackageGestureTargetPolicy.select(GestureTapBounds(277, 2358, 802, 2400),
+            GestureTapBounds(0, 1212, 1080, 2400),
+            listOf(GestureTapBounds(0, 2334, 1080, 2400))))
+    }
+
+    // 多个系统遮挡叠加或窗口上下交换后不能沿用旧点击点。
+    @Test
+    fun revalidatesTouchPointAfterOcclusionOrWindowMoves() {
+        val window = GestureTapBounds(0, 0, 1080, 1188)
+        val point = PackageGestureTargetPolicy.select(GestureTapBounds(277, 1146, 802, 1188), window,
+            listOf(GestureTapBounds(381, 1151, 696, 1246), GestureTapBounds(696, 1146, 802, 1188)))!!
+        assertTrue(point.x < 381)
+        assertFalse(PackageGestureTargetPolicy.isSafePoint(point,
+            GestureTapBounds(0, 1212, 1080, 2400), emptyList()))
+        assertFalse(PackageGestureTargetPolicy.isSafePoint(point, window,
+            listOf(GestureTapBounds(0, 1140, 1080, 1188))))
+        assertNull(PackageGestureTargetPolicy.select(GestureTapBounds(0, 1200, 200, 1300), window, emptyList()))
+    }
+
+    // “收下”还在时即使背景统计更新，也必须保留未关闭状态，不能反复回到假成功节点点击。
+    @Test
+    fun resultDismissSettlesOnlyWhenConfirmationPageDisappears() {
+        assertFalse(NavigationSettlementPolicy.hasSettled(PluginCommandType.DISMISS_RESULT,
+            PluginPage.SUCCESS, PluginPage.SUCCESS, true))
+        assertFalse(NavigationSettlementPolicy.hasSettled(PluginCommandType.DISMISS_RESULT,
+            PluginPage.SUCCESS, PluginPage.ALREADY_COMPLETED, true))
+        assertTrue(NavigationSettlementPolicy.hasSettled(PluginCommandType.DISMISS_RESULT,
+            PluginPage.SUCCESS, PluginPage.CHECK_IN_ENTRY, true))
+        assertTrue(NavigationSettlementPolicy.hasSettled(PluginCommandType.SCROLL_CANDIDATES,
+            PluginPage.CANDIDATE_LIST, PluginPage.CANDIDATE_LIST, true))
+    }
+
+    // 超范围恢复缺少返回节点时，只能返回自身焦点窗口，不得关闭另一地图。
+    @Test
+    fun refusesBackNavigationForAnotherProviderOrUnknownFocus() {
+        assertTrue(PackageNavigationSafetyPolicy.canNavigateBack("baidu", "baidu"))
+        assertFalse(PackageNavigationSafetyPolicy.canNavigateBack("baidu", "amap"))
+        assertFalse(PackageNavigationSafetyPolicy.canNavigateBack("amap", null))
+        assertFalse(PackageNavigationSafetyPolicy.canNavigateBack("", ""))
+    }
+
+    // 验证分屏裁切时优先使用按钮容器；此几何中心还需扣除系统触摸热区才能派发。
+    @Test
+    fun usesVisibleDismissButtonContainerInsteadOfClippedText() {
+        assertTrue(PluginCommandTargetBoundsPolicy.isDismissButtonAncestor(
+            targetHeight = 16, ancestorHeight = 42, windowHeight = 1188
+        ))
+        assertEquals(GestureTapPoint(539, 1167),
+            PluginCommandTargetBoundsPolicy.selectVisiblePoint(
+                targetLeft = 277, targetTop = 1146, targetRight = 802, targetBottom = 1188,
+                windowLeft = 0, windowTop = 0, windowRight = 1080, windowBottom = 1188
+            ))
+        assertFalse(PluginCommandTargetBoundsPolicy.isDismissButtonAncestor(
+            targetHeight = 16, ancestorHeight = 1188, windowHeight = 1188
+        ))
+        assertFalse(PluginCommandTargetBoundsPolicy.isDismissButtonAncestor(
+            targetHeight = 0, ancestorHeight = 42, windowHeight = 1188
+        ))
+    }
 
     // 验证同名模板入口不能覆盖已经绑定的真实打卡页签。
     @Test

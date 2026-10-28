@@ -22,6 +22,7 @@ import com.wu.nearbycheckin.core.model.AccessibilityDiagnostics
 import com.wu.nearbycheckin.core.model.AutomationLogLevel
 import com.wu.nearbycheckin.core.model.MapProvider
 import com.wu.nearbycheckin.core.model.AutomationSessionStatus
+import com.wu.nearbycheckin.core.domain.plugin.CheckInRangeEvidencePolicy
 import com.wu.nearbycheckin.platform.cruise.CruiseService
 import com.wu.nearbycheckin.platform.maps.AccessibilityWindowInspector
 
@@ -174,7 +175,7 @@ class DualMapAccessibilityService : AccessibilityService() {
         inspectCurrentWindows("窗口变化")
     }
 
-    // 把高德瞬时频率限制提示转交给当前命令并避免写入无关通知内容。
+    // 按应用包转发两地图瞬时超范围提示，高德频率提示继续走原有诊断分支。
     private fun forwardTransientMapMessage(
         event: AccessibilityEvent
     ) {
@@ -189,6 +190,16 @@ class DualMapAccessibilityService : AccessibilityService() {
                 " ${event.source?.contentDescription?.toString().orEmpty()}"
             )
             .trim()
+        if (CheckInRangeEvidencePolicy.matches(message)) {
+            val accepted = when (packageName) {
+                BAIDU_MAP_PACKAGE_NAME -> ::baiduProviderWorker.isInitialized &&
+                        baiduProviderWorker.recordOutOfRangeEvidence(message)
+                AMAP_PACKAGE_NAME -> ::amapProviderWorker.isInitialized &&
+                        amapProviderWorker.recordOutOfRangeEvidence(message)
+                else -> false
+            }
+            if (accepted) saveAutomationStatus("地图超范围提示：$message")
+        }
         if (
             AmapTransientMessagePolicy.isRateLimitEvidence(
                 packageName = packageName,

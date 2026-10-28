@@ -102,6 +102,32 @@ class ProviderAutomationCoordinator(
         }
     }
 
+    // 范围失败只撤销该地图旧位置的可执行队列，不写成功记录或永久完成键。
+    fun invalidateOutOfRangeCandidates(provider: MapProvider, message: String) = synchronized(lock) {
+        val nowMillis = clock.nowMillis()
+        repository.updateSnapshot { snapshot ->
+            val runtime = snapshot.providerRuntime
+            snapshot.copy(
+                providerTasks = snapshot.providerTasks.map { task ->
+                    if (task.provider == provider && task.status in EXECUTABLE_TASK_STATUSES) {
+                        task.copy(status = ProviderTaskStatus.CANCELLED,
+                            updatedAtMillis = nowMillis, leaseOwner = "", leaseUntilMillis = 0L,
+                            lastError = message)
+                    } else task
+                },
+                providerCandidates = snapshot.providerCandidates.filterNot { it.provider == provider },
+                providerRuntime = when (provider) {
+                    MapProvider.BAIDU -> runtime.copy(baiduState = ProviderAutomationState.READY,
+                        baiduListStale = true, baiduListFingerprint = "",
+                        activeProvider = runtime.activeProvider.takeUnless { it == provider })
+                    MapProvider.AMAP -> runtime.copy(amapState = ProviderAutomationState.READY,
+                        amapListStale = true, amapListFingerprint = "",
+                        activeProvider = runtime.activeProvider.takeUnless { it == provider })
+                }
+            )
+        }
+    }
+
     // 开始读取指定 Provider 候选列表。
     fun beginCandidateRefresh(provider: MapProvider) = synchronized(lock) {
         repository.updateSnapshot { snapshot ->

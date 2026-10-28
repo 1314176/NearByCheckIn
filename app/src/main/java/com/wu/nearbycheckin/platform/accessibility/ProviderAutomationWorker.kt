@@ -24,6 +24,7 @@ import com.wu.nearbycheckin.core.domain.plugin.PluginCommand
 import com.wu.nearbycheckin.core.domain.plugin.PluginCommandType
 import com.wu.nearbycheckin.core.domain.plugin.PluginPage
 import com.wu.nearbycheckin.core.domain.plugin.PluginPageState
+import com.wu.nearbycheckin.core.domain.plugin.CheckInRangeRecoveryPolicy
 import com.wu.nearbycheckin.core.model.AutomationSessionStatus
 import com.wu.nearbycheckin.core.model.LocationSnapshot
 import com.wu.nearbycheckin.core.model.MapOperationEvidence
@@ -68,6 +69,8 @@ class ProviderAutomationWorker(
     private var pendingNavigationCommandType: PluginCommandType? = null
     private var pendingNavigationEvidence = ""
     private val navigationRetryPolicy = NavigationRetryPolicy()
+    private val rangeRecoveryPolicy = CheckInRangeRecoveryPolicy()
+    private val baiduPanelRecoveryPolicy = BaiduPanelRecoveryPolicy()
     private var navigationDeadlineMillis = 0L
     private var navigationGestureFallback = false
     private var lastReportedStatus = ""
@@ -125,6 +128,8 @@ class ProviderAutomationWorker(
         listOpenedAtMillis = 0L
         clearPendingNavigation()
         navigationRetryPolicy.reset()
+        rangeRecoveryPolicy.reset()
+        baiduPanelRecoveryPolicy.reset()
         mainHandler.removeCallbacks(tickRunnable)
     }
 
@@ -135,6 +140,17 @@ class ProviderAutomationWorker(
         }
         amapTransientRateLimitMessage = message.trim()
         amapTransientRateLimitAtMillis = System.currentTimeMillis()
+    }
+
+    // 将超范围 Toast 绑定到本地图正在执行的任务，旧任务或停止状态不接收提示。
+    fun recordOutOfRangeEvidence(message: String): Boolean {
+        if (!running) return false
+        val snapshot = repository.currentSnapshot()
+        if (snapshot.session?.status != AutomationSessionStatus.RUNNING) return false
+        val task = snapshot.providerTasks.firstOrNull {
+            it.provider == provider && it.status in ACTIVE_STATUSES
+        } ?: return false
+        return rangeRecoveryPolicy.record(task.taskId, task.commandId, message, System.currentTimeMillis())
     }
 
     // 选择当前阶段可执行的 Provider 并推进一个原子步骤。
@@ -166,6 +182,7 @@ class ProviderAutomationWorker(
             profileVersion = plugin.profileVersion
         )
         val pageState = plugin.inspect(window)
+        if (pageState.page !in setOf(PluginPage.FOOTPRINT, PluginPage.UNKNOWN)) baiduPanelRecoveryPolicy.reset()
         if (pageState.page != PluginPage.CANDIDATE_LIST) {
             listOpenedAtMillis = 0L
             listOrigin = null
@@ -180,9 +197,29 @@ class ProviderAutomationWorker(
             action = "INSPECT",
             evidence = pageState.evidence
         )
+        val rangeTask = repository.currentSnapshot().providerTasks.firstOrNull {
+            it.provider == provider && it.status in ACTIVE_STATUSES
+        }
+        val rangeMessage = rangeRecoveryPolicy.consume(rangeTask?.taskId.orEmpty(),
+            rangeTask?.commandId.orEmpty(), System.currentTimeMillis())
+            ?: pageState.blockedReason.takeIf { pageState.page == PluginPage.OUT_OF_RANGE }
+        if (rangeMessage != null && rangeRecoveryPolicy.begin(
+                initialSnapshot.providerRuntime.latestLocation?.timestampMillis ?: System.currentTimeMillis())) {
+            coordinator.invalidateOutOfRangeCandidates(provider, rangeMessage)
+            verificationDeadlineMillis = 0L
+            clearAmapFollowUpState()
+            clearPendingNavigation()
+            navigationRetryPolicy.reset()
+            gestureDispatcher.cancelWaiting(provider)
+            visitedListFingerprints.clear()
+            listOpenedAtMillis = 0L
+            listOrigin = null
+            reportStatus("${provider.displayName()}超出打卡范围，撤销旧位置队列并重新定位：$rangeMessage")
+        }
         if (waitForNavigationSettlement(pageState)) {
             return
         }
+        if (recoverOutOfRange(rootNode, packageName, plugin, pageState)) return
         val visibleCandidates = if (
             pageState.page == PluginPage.CANDIDATE_LIST ||
             pageState.page == PluginPage.CHECK_IN_ENTRY
@@ -269,6 +306,46 @@ class ProviderAutomationWorker(
                 sourcePage = pageState.page
             )
         }
+    }
+
+    // 超范围后先关闭提示并退出旧列表，只有返回入口并获得更新定位才恢复选点。
+    private fun recoverOutOfRange(
+        rootNode: AccessibilityNodeInfo,
+        packageName: String,
+        plugin: com.wu.nearbycheckin.core.domain.plugin.MapAutomationPlugin,
+        state: PluginPageState
+    ): Boolean {
+        if (!rangeRecoveryPolicy.isRecovering) return false
+        if (state.page in setOf(PluginPage.BLOCKED, PluginPage.DAILY_QUOTA_EXHAUSTED)) {
+            rangeRecoveryPolicy.reset()
+            return false
+        }
+        val location = repository.currentSnapshot().providerRuntime.latestLocation
+        if (rangeRecoveryPolicy.canResume(state.page, location?.timestampMillis,
+                locationFreshnessPolicy.isFresh(location, System.currentTimeMillis()))) {
+            rangeRecoveryPolicy.reset()
+            reportStatus("${provider.displayName()}已返回打卡入口并取得新定位，重新读取附近地点")
+            return false
+        }
+        if (state.page in setOf(PluginPage.HOME, PluginPage.MINE,
+                PluginPage.FOOTPRINT, PluginPage.CHECK_IN_ENTRY)) {
+            gestureDispatcher.cancelWaiting(provider)
+            reportStatus("${provider.displayName()}范围失败恢复中，等待更新且有效的定位")
+            return true
+        }
+        val command = if (state.page in setOf(PluginPage.OUT_OF_RANGE, PluginPage.SUCCESS,
+                PluginPage.ALREADY_COMPLETED, PluginPage.SHARE_PANEL)) {
+            plugin.buildNextAction(state)
+        } else {
+            PluginCommand(commandId = "range-back-${System.currentTimeMillis()}", taskId = "",
+                provider = provider, type = PluginCommandType.NAVIGATE_BACK,
+                target = com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget(
+                    labels = listOf("返回", "返回上一页"),
+                    viewId = if (provider == MapProvider.BAIDU) "com.baidu.BaiduMap:id/btn_back" else ""),
+                createdAtMillis = System.currentTimeMillis(), evidenceHint = "超范围后退出旧位置列表")
+        }
+        executeNavigation(rootNode, packageName, command, state.page)
+        return true
     }
 
     // 持久化百度每日额度证据并立即暂停当天百度队列。
@@ -553,7 +630,7 @@ class ProviderAutomationWorker(
                                         VERIFY_RECOVERY_MILLIS
                                     )
                         reportStatus(
-                            "高德地图已执行第二次打卡，等待地点统计增长或明确成功页"
+                            "高德地图已执行第二次打卡，等待地点统计增长"
                         )
                         return
                     }
@@ -759,14 +836,23 @@ class ProviderAutomationWorker(
             gestureDispatcher.cancelWaiting(provider)
             return
         }
+        val expandingBaiduPanel = provider == MapProvider.BAIDU &&
+                command.type == PluginCommandType.EXPAND_CHECK_IN_PANEL
+        if (expandingBaiduPanel && !gestureDispatcher.canExecuteCommand(provider)) return
+        val action = if (expandingBaiduPanel && baiduPanelRecoveryPolicy.needsReentry) {
+            command.copy(type = PluginCommandType.NAVIGATE_BACK,
+                target = com.wu.nearbycheckin.core.domain.plugin.PluginCommandTarget(
+                    labels = listOf("返回"), viewId = "com.baidu.BaiduMap:id/btn_back"),
+                evidenceHint = "打卡面板连续两次未展开，返回入口重新进入")
+        } else command
         val sourceEvidence = repository.currentSnapshot().providerRuntime.let { runtime ->
             if (provider == MapProvider.BAIDU) runtime.baiduPluginEvidence
             else runtime.amapPluginEvidence
         }
-        val result = executeCommand(rootNode, packageName, command)
-        if (result.success && command.type in NAVIGATION_COMMAND_TYPES) {
+        val result = executeCommand(rootNode, packageName, action)
+        if (result.success && action.type in NAVIGATION_COMMAND_TYPES) {
             pendingNavigationSourcePage = sourcePage
-            pendingNavigationCommandType = command.type
+            pendingNavigationCommandType = action.type
             pendingNavigationEvidence = sourceEvidence
             navigationDeadlineMillis =
                 System.currentTimeMillis() + NAVIGATION_SETTLE_MILLIS
@@ -774,14 +860,22 @@ class ProviderAutomationWorker(
             reportStatus(
                 if (
                     provider == MapProvider.AMAP &&
-                    command.type == PluginCommandType.DISMISS_RESULT
+                    action.type == PluginCommandType.DISMISS_RESULT
                 ) {
-                    "高德地图已提交“收下”确认，等待成功页关闭"
+                    "高德地图已提交“收下”确认，等待成功页关闭；${result.message}"
+                } else if (expandingBaiduPanel) {
+                    if (action.type == PluginCommandType.NAVIGATE_BACK) action.evidenceHint
+                    else "百度地图正在展开打卡面板；${result.message}"
                 } else {
-                    "${provider.displayName()}已提交${command.type.name}，等待页面变化"
+                    "${provider.displayName()}已提交${action.type.name}，等待页面变化"
                 }
             )
         } else {
+            if (expandingBaiduPanel) {
+                if (action.type == PluginCommandType.EXPAND_CHECK_IN_PANEL) baiduPanelRecoveryPolicy.recordFailure()
+                navigationRetryPolicy.recordTimeout(System.currentTimeMillis())
+                gestureDispatcher.cancelWaiting(provider)
+            }
             reportStatus(result.message)
         }
     }
@@ -792,9 +886,8 @@ class ProviderAutomationWorker(
     ): Boolean {
         val sourcePage = pendingNavigationSourcePage ?: return false
         val currentPage = currentState.page
-        if (currentPage != sourcePage ||
-            currentState.evidence != pendingNavigationEvidence
-        ) {
+        if (NavigationSettlementPolicy.hasSettled(pendingNavigationCommandType, sourcePage,
+                currentPage, currentState.evidence != pendingNavigationEvidence)) {
             if (provider == MapProvider.AMAP &&
                 pendingNavigationCommandType == PluginCommandType.DISMISS_RESULT &&
                 currentPage !in setOf(PluginPage.SUCCESS, PluginPage.ALREADY_COMPLETED)
@@ -812,6 +905,9 @@ class ProviderAutomationWorker(
             "${provider.displayName()}${pendingNavigationCommandType?.name.orEmpty()}" +
                     "后页面未变化，准备重试"
         )
+        if (pendingNavigationCommandType == PluginCommandType.EXPAND_CHECK_IN_PANEL) {
+            baiduPanelRecoveryPolicy.recordFailure()
+        }
         clearPendingNavigation()
         navigationGestureFallback = true
         navigationRetryPolicy.recordTimeout(System.currentTimeMillis())
@@ -1010,6 +1106,7 @@ class ProviderAutomationWorker(
             PluginCommandType.NAVIGATE_FOOTPRINT,
             PluginCommandType.OPEN_CHECK_IN_ENTRY,
             PluginCommandType.SCROLL_CANDIDATES,
+            PluginCommandType.EXPAND_CHECK_IN_PANEL,
             PluginCommandType.NAVIGATE_BACK,
             PluginCommandType.DISMISS_RESULT
         )
@@ -1025,6 +1122,32 @@ class ProviderAutomationWorker(
             ProviderTaskStatus.CANCELLED
         )
     }
+}
+
+internal object NavigationSettlementPolicy {
+
+    // 关闭结果必须确认弹层已消失，背景文案或统计变化不能重置真实手势重试状态。
+    fun hasSettled(command: PluginCommandType?, source: PluginPage, current: PluginPage, evidenceChanged: Boolean): Boolean {
+        if (command == PluginCommandType.EXPAND_CHECK_IN_PANEL) {
+            return current != source && current != PluginPage.UNKNOWN
+        }
+        if (command == PluginCommandType.DISMISS_RESULT) {
+            val resultPages = setOf(PluginPage.SUCCESS, PluginPage.ALREADY_COMPLETED)
+            return current != source && !(source in resultPages && current in resultPages)
+        }
+        return current != source || evidenceChanged
+    }
+}
+
+internal class BaiduPanelRecoveryPolicy {
+    private var failures = 0
+    val needsReentry: Boolean get() = failures >= 2
+
+    // 两次展开没有露出按钮后改为返回入口，避免单个页面反复滚动。
+    fun recordFailure() { failures += 1 }
+
+    // 真实页面已切换或 Worker 停止后清除上一轮面板失败次数。
+    fun reset() { failures = 0 }
 }
 
 internal class NavigationRetryPolicy {

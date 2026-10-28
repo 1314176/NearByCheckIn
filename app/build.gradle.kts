@@ -27,8 +27,8 @@ android {
         minSdk = 26
         targetSdk = 37
         // 版本从3.0.0起，每完成一轮代码编辑后递增，并同步主界面底部版本文字。
-        versionCode = 30018
-        versionName = "3.0.18"
+        versionCode = 30022
+        versionName = "3.0.22"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
